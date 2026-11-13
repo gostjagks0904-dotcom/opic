@@ -1,0 +1,1145 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>오픽 AI 모의고사·학습</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=Noto+Serif+KR:wght@700;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  /* layout: one narrow answer-sheet column; OMR bubbles carry selection, progress and the grade */
+  --paper:#EDF0F5; --sheet:#FFFFFF; --ink:#141B2D; --ink-2:#566074; --line:#D2D8E3;
+  --mark:#CC2B63; --on-mark:#FFFFFF; --mark-soft:#FAE1EA; --ok:#1C7F55; --warn:#A2640B;
+  --display:"Noto Serif KR","Apple Myungjo","Batang",serif;
+  --body:"IBM Plex Sans KR",-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0D111A; --sheet:#161C29; --ink:#E8ECF4; --ink-2:#9BA6BA; --line:#2C3547;
+    --mark:#F26A9B; --on-mark:#1B0A12; --mark-soft:#3A1B2A; --ok:#55C794; --warn:#E3B155;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0D111A; --sheet:#161C29; --ink:#E8ECF4; --ink-2:#9BA6BA; --line:#2C3547;
+  --mark:#F26A9B; --on-mark:#1B0A12; --mark-soft:#3A1B2A; --ok:#55C794; --warn:#E3B155;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0}
+body{background:var(--paper);color:var(--ink);font:400 16px/1.6 var(--body);-webkit-text-size-adjust:100%;word-break:keep-all;overflow-wrap:break-word}
+.wrap{max-width:640px;margin:0 auto;padding:24px 16px 56px;display:flex;flex-direction:column;gap:16px}
+h1,h2,h3,h4{margin:0;text-wrap:balance;line-height:1.3}
+h1{font:900 1.875rem/1.2 var(--display);letter-spacing:-.01em}
+h2{font:700 1.125rem/1.3 var(--display)}
+h3{font:600 .9375rem/1.4 var(--body)}
+h4{font:600 .8125rem/1.4 var(--body);color:var(--ink-2);letter-spacing:.02em}
+p,ul,ol{margin:0}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.note{font-size:.875rem;color:var(--ink-2)}
+.status{font-size:.9375rem;color:var(--ink-2);min-height:1.5em}
+.status.err{color:var(--mark)}
+:focus-visible{outline:3px solid var(--mark);outline-offset:2px}
+
+.mast{display:flex;flex-direction:column;gap:10px;padding:8px 0 4px}
+.eyebrow{font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--mark)}
+.lede{color:var(--ink-2);max-width:34em}
+
+.ladder{list-style:none;display:grid;grid-template-columns:repeat(9,1fr);gap:4px;padding:0}
+.ladder li{display:flex;flex-direction:column;align-items:center;gap:5px;font-size:.6875rem;color:var(--ink-2)}
+.ladder i{width:12px;height:19px;border:1.5px solid var(--mark);border-radius:50%}
+.ladder li.hit{color:var(--ink);font-weight:600}
+.ladder li.hit i{background:var(--ink);border-color:var(--ink)}
+
+.sheet{background:var(--sheet);border:1px solid var(--line);border-top:3px solid var(--mark);border-radius:3px;padding:18px 16px 20px;display:flex;flex-direction:column;gap:14px}
+.step{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.stepno{display:inline-grid;place-items:center;width:26px;height:26px;border:1.5px solid var(--ink);font-size:.875rem}
+.stepko{color:var(--ink-2);font-size:.875rem}
+
+.fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.field{display:flex;flex-direction:column;gap:6px;font-size:.8125rem;font-weight:600;color:var(--ink-2)}
+select,input[type="password"]{min-height:44px;width:100%;padding:8px 10px;border:1px solid var(--ink);border-radius:3px;background:var(--sheet);color:var(--ink);font:400 1rem var(--body)}
+
+.chips{border:0;padding:0;margin:0;min-width:0;display:flex;flex-wrap:wrap;gap:8px}
+.chips legend{padding:0;margin-bottom:8px;font-size:.8125rem;font-weight:600;color:var(--ink-2);letter-spacing:.02em}
+.bub{display:inline-block;width:10px;height:16px;border:1.5px solid var(--mark);border-radius:50%;flex:none}
+.chip{display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:6px 12px 6px 10px;border:1px solid var(--line);border-radius:3px;background:transparent;color:var(--ink);font:400 .9375rem var(--body);cursor:pointer}
+.chip[aria-pressed="true"]{border-color:var(--ink);font-weight:600}
+.chip[aria-pressed="true"] .bub{background:var(--ink);border-color:var(--ink)}
+
+.seg{display:flex;border:1px solid var(--ink);border-radius:3px;overflow:hidden}
+.seg button{flex:1;min-height:44px;padding:8px 6px;border:0;border-left:1px solid var(--ink);background:transparent;color:var(--ink);font:400 .9375rem var(--body);cursor:pointer}
+.seg button:first-child{border-left:0}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--sheet);font-weight:600}
+.opt{display:flex;flex-direction:column;gap:8px}
+
+.facts{padding-left:1.2em;color:var(--ink-2);font-size:.9375rem}
+.caps{list-style:none;padding:0;display:flex;flex-direction:column;gap:2px;font-size:.8125rem;color:var(--ink-2)}
+.caps b{color:var(--ink);font-weight:600}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:46px;padding:10px 18px;border-radius:3px;border:1.5px solid var(--ink);background:transparent;color:var(--ink);font:600 1rem var(--body);cursor:pointer}
+.btn.primary{background:var(--mark);border-color:var(--mark);color:var(--on-mark)}
+.btn.big{min-height:54px;font-size:1.0625rem;width:100%}
+.btn.link{border:0;min-height:44px;padding:8px 4px;color:var(--ink-2);text-decoration:underline;text-underline-offset:3px;font-weight:500}
+.btn:disabled,.mic:disabled{opacity:.45;cursor:not-allowed}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.stack{display:flex;flex-direction:column;gap:10px}
+.tagline{font-size:.875rem;color:var(--ink-2);text-align:right;min-width:0}
+
+/* exam */
+.examtop{display:flex;flex-direction:column;gap:12px}
+.omr{list-style:none;margin:0;padding:0;display:flex;gap:6px;flex-wrap:wrap}
+.omr li{width:10px;height:16px;border:1.5px solid var(--mark);border-radius:50%}
+.omr li.done{background:var(--ink);border-color:var(--ink)}
+.omr li.now{background:var(--mark)}
+.examtop-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.qno{font-family:var(--mono);font-size:1.75rem;line-height:1}
+.qno small{font-size:.875rem;color:var(--ink-2)}
+.clock{font-family:var(--mono);font-size:1.125rem;font-variant-numeric:tabular-nums}
+.clock.low{color:var(--mark)}
+.ava-row{display:flex;align-items:center;gap:14px}
+.wave{display:flex;align-items:center;gap:3px;height:36px;width:38px;flex:none}
+.wave i{width:5px;height:8px;background:var(--ink-2);border-radius:2px}
+.wave.on i{background:var(--mark);animation:wv 900ms ease-in-out infinite}
+.wave.on i:nth-child(2){animation-delay:-150ms}
+.wave.on i:nth-child(3){animation-delay:-420ms}
+.wave.on i:nth-child(4){animation-delay:-260ms}
+.wave.on i:nth-child(5){animation-delay:-560ms}
+@keyframes wv{0%,100%{height:8px}50%{height:32px}}
+.ava-txt{display:flex;flex-direction:column;min-width:0}
+.ava-txt strong{font:700 1.0625rem var(--display)}
+.ava-txt span{font-size:.875rem;color:var(--ink-2)}
+.qtext{border-left:3px solid var(--mark);padding-left:12px;overflow-wrap:anywhere}
+.answer-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.answer-head label{font:700 1.0625rem var(--display)}
+.answer-head .meta{font-family:var(--mono);font-size:.8125rem;color:var(--ink-2);font-variant-numeric:tabular-nums}
+textarea{display:block;width:100%;min-height:10.5rem;padding:0 12px;border:1px solid var(--line);border-radius:3px;background-color:var(--sheet);color:var(--ink);font:400 1rem/1.75rem var(--body);resize:vertical;
+  background-image:linear-gradient(var(--line) 1px,transparent 1px);background-size:100% 1.75rem;background-position:0 calc(1.75rem - 1px);background-attachment:local}
+.partial{min-height:1.5em;font-size:.9375rem;color:var(--ink-2);font-style:italic;overflow-wrap:anywhere}
+.mic{display:inline-flex;align-items:center;gap:10px;min-height:52px;padding:10px 22px;border-radius:999px;border:1.5px solid var(--ink);background:var(--ink);color:var(--sheet);font:600 1rem var(--body);cursor:pointer}
+.mic .dot{width:12px;height:12px;border-radius:50%;background:var(--mark)}
+.mic.on{background:var(--mark);border-color:var(--mark);color:var(--on-mark)}
+.mic.on .dot{background:var(--on-mark);animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.25}}
+.examfoot{position:sticky;bottom:0;background:var(--paper);padding:10px 0}
+
+/* result */
+.grade-label{font-size:.8125rem;font-weight:600;color:var(--ink-2);letter-spacing:.02em}
+.grade-big{font:900 4.5rem/1 var(--display);letter-spacing:-.02em}
+.bars{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;font-size:.9375rem}
+.bar{height:8px;background:var(--mark-soft)}
+.bar i{display:block;height:100%;background:var(--mark)}
+.plain{padding-left:1.2em;display:flex;flex-direction:column;gap:6px}
+.qa{border-top:1px solid var(--line)}
+.qa summary{display:flex;align-items:center;gap:10px;padding:12px 0;cursor:pointer;list-style:none}
+.qa summary::-webkit-details-marker{display:none}
+.qa summary::after{content:"+";font-family:var(--mono);color:var(--ink-2);width:1em;text-align:center}
+.qa[open] summary::after{content:"−"}
+.qa .qt{flex:1;min-width:0;font-size:.9375rem}
+.pill{font-family:var(--mono);font-size:.8125rem;padding:1px 8px;border:1px solid var(--line);border-radius:999px;white-space:nowrap}
+.pill.hi{color:var(--ok);border-color:var(--ok)}
+.pill.lo{color:var(--warn);border-color:var(--warn)}
+.qa-body{display:flex;flex-direction:column;gap:10px;padding:0 0 18px}
+.a-en{background:var(--paper);padding:12px;white-space:pre-wrap;overflow-wrap:anywhere;border-radius:3px}
+.fixes{list-style:none;padding:0;display:flex;flex-direction:column;gap:10px}
+.fixes li{display:flex;flex-direction:column;gap:2px;overflow-wrap:anywhere}
+.fixes del{color:var(--ink-2)}
+.fixes ins{text-decoration:none;font-weight:600;color:var(--ok)}
+.fixes span{font-size:.875rem;color:var(--ink-2)}
+.model{white-space:pre-wrap;overflow-wrap:anywhere;border-left:3px solid var(--ok);padding-left:12px}
+@media (max-width:420px){ .fields{grid-template-columns:1fr} .grade-big{font-size:3.75rem} }
+@media (prefers-reduced-motion:reduce){ .wave.on i{animation:none;height:20px} .mic.on .dot{animation:none} }
+</style>
+</head>
+<body>
+<main class="wrap" id="app"></main>
+<script>
+(() => {
+'use strict';
+
+/* ---------- helpers ---------- */
+const app = document.getElementById('app');
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pad = n => String(n).padStart(2, '0');
+const mmss = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':' + pad(s % 60); };
+const words = t => (String(t).trim().match(/\S+/g) || []).length;
+const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const KEY = 'opic-ai-mock-v1';
+const store = {
+  get() { try { return JSON.parse(localStorage.getItem(KEY)); } catch (e) { return null; } },
+  set(v) { try { localStorage.setItem(KEY, JSON.stringify(v)); } catch (e) {} }
+};
+
+/* ---------- exam content seeds (topics only; every question is written by AI) ---------- */
+const LEVELS = ['NL', 'NM', 'NH', 'IL', 'IM1', 'IM2', 'IM3', 'IH', 'AL'];
+const SURVEY = [
+  ['여가 활동', [
+    ['movies', '영화 보기', 'watching movies'], ['performances', '공연 보기', 'going to performances and plays'],
+    ['concerts', '콘서트 보기', 'going to concerts'], ['museums', '박물관 가기', 'visiting museums'],
+    ['parks', '공원 가기', 'going to parks'], ['camping', '캠핑하기', 'going camping'],
+    ['beach', '해변 가기', 'going to the beach'], ['sportswatch', '스포츠 관람', 'watching sports games'],
+    ['cafes', '카페 가기', 'going to cafes and coffee shops'], ['shopping', '쇼핑하기', 'going shopping'],
+    ['tv', 'TV 보기', 'watching TV shows'], ['games', '게임하기', 'playing video games'],
+    ['bars', '술집·바 가기', 'going to bars'], ['sns', 'SNS 글 올리기', 'posting on social media']]],
+  ['취미·관심사', [
+    ['music', '음악 감상', 'listening to music'], ['instrument', '악기 연주', 'playing a musical instrument'],
+    ['singing', '노래 부르기', 'singing'], ['cooking', '요리하기', 'cooking'],
+    ['reading', '독서', 'reading books'], ['photo', '사진 촬영', 'taking photos'],
+    ['drawing', '그림 그리기', 'drawing and painting'], ['pets', '반려동물 기르기', 'raising a pet']]],
+  ['운동', [
+    ['jogging', '조깅', 'jogging'], ['walking', '걷기', 'taking walks'], ['cycling', '자전거', 'riding a bicycle'],
+    ['swimming', '수영', 'swimming'], ['gym', '헬스', 'working out at a gym'], ['yoga', '요가', 'doing yoga'],
+    ['hiking', '하이킹·등산', 'hiking'], ['soccer', '축구', 'playing soccer'], ['basketball', '농구', 'playing basketball'],
+    ['badminton', '배드민턴', 'playing badminton'], ['tennis', '테니스', 'playing tennis'], ['golf', '골프', 'playing golf']]],
+  ['휴가·출장', [
+    ['domestic', '국내 여행', 'domestic trips'], ['overseas', '해외 여행', 'overseas trips'],
+    ['staycation', '집에서 보내는 휴가', 'vacations spent at home'], ['biztrip', '출장', 'business trips']]]
+];
+const DEFAULT_TOPICS = ['movies', 'concerts', 'parks', 'beach', 'cafes', 'shopping', 'music', 'jogging', 'walking', 'domestic', 'overseas', 'staycation'];
+const SURPRISE = [
+  ['chores', '집안일', 'household chores'], ['recycling', '재활용', 'recycling'], ['banks', '은행', 'banks'],
+  ['weather', '날씨·계절', 'weather and seasons'], ['transit', '대중교통', 'public transportation'],
+  ['internet', '인터넷 사용', 'using the internet'], ['phones', '휴대폰', 'mobile phones'],
+  ['tech', '기술·전자기기', 'technology and gadgets'], ['hotels', '호텔', 'hotels'],
+  ['restaurants', '외식·식당', 'eating out at restaurants'], ['food', '음식·식습관', 'food and eating habits'],
+  ['health', '건강', 'staying healthy'], ['clinic', '병원·치과', 'hospitals and dental clinics'],
+  ['furniture', '가구', 'furniture'], ['appliances', '가전제품', 'home appliances'],
+  ['fashion', '패션·옷', 'fashion and clothing'], ['plans', '약속', 'making plans with people'],
+  ['holidays', '명절·휴일', 'holidays and traditional celebrations'],
+  ['geography', '우리나라 지형', 'the geography of your country'], ['neighbors', '이웃', 'neighbors'],
+  ['neighborhood', '동네', 'your neighborhood'], ['family', '가족·친구', 'family and friends'],
+  ['gatherings', '모임·파티', 'gatherings and parties'], ['freetime', '자유 시간', 'free time'],
+  ['delivery', '배달·택배', 'deliveries and food delivery'], ['onlineshop', '온라인 쇼핑', 'online shopping'],
+  ['reservations', '예약', 'making reservations'], ['hairsalon', '미용실', 'hair salons'],
+  ['grocery', '장보기', 'grocery shopping'], ['industry', '산업·기업', 'industries and well-known companies in your country'],
+  ['project', '과제·프로젝트', 'a project at school or work'], ['jobhunt', '면접·구직', 'job interviews and job hunting'],
+  ['classes', '수업·선생님', 'classes and teachers'], ['environment', '환경 문제', 'environmental issues'],
+  ['news', '뉴스', 'following the news'], ['commute', '통학·출퇴근', 'commuting'],
+  ['lost', '물건 분실', 'losing things'], ['gifts', '선물', 'giving and receiving gifts'],
+  ['birthdays', '생일·기념일', 'birthdays and anniversaries'], ['driving', '운전', 'driving'],
+  ['airports', '공항·비행', 'airports and flights'], ['streaming', '영상 스트리밍', 'video streaming services'],
+  ['repairs', '집 수리', 'fixing things at home'], ['moving', '이사', 'moving to a new home'],
+  ['directions', '길 찾기', 'finding your way and giving directions'], ['sleep', '수면·휴식', 'sleep and rest'],
+  ['stress', '스트레스 해소', 'relieving stress'], ['time', '시간 관리', 'managing your time']
+];
+const RP = [
+  ['rp_hotel', '호텔 예약', 'booking a hotel room'], ['rp_table', '식당 예약', 'reserving a table at a restaurant'],
+  ['rp_meet', '친구와 약속', 'making plans to meet a friend'], ['rp_return', '교환·환불', 'exchanging or returning something you bought'],
+  ['rp_phone', '휴대폰 구매', 'buying a new mobile phone'], ['rp_gym', '헬스장 등록', 'joining a gym'],
+  ['rp_car', '렌터카', 'renting a car'], ['rp_flight', '항공권', 'booking or changing a flight'],
+  ['rp_doctor', '병원 예약', 'making a doctor\'s appointment'], ['rp_account', '은행 계좌', 'opening a bank account'],
+  ['rp_parcel', '배송 문제', 'a parcel that has not arrived'], ['rp_tickets', '공연·영화 표', 'buying tickets for a movie or a concert'],
+  ['rp_sofa', '가구 구매', 'buying furniture'], ['rp_party', '파티 준비', 'organizing a party for a friend'],
+  ['rp_course', '강좌 등록', 'signing up for a class'], ['rp_fix', '수리 요청', 'getting something repaired'],
+  ['rp_tour', '여행 상품', 'planning a trip with a travel agency'], ['rp_flat', '집 구하기', 'looking for a new apartment'],
+  ['rp_borrow', '빌린 물건', 'borrowing something from a friend'], ['rp_invite', '초대', 'being invited to an event']
+];
+const CAT = { self: '자기소개', survey: '선택 주제', surprise: '돌발 주제', roleplay: '롤플레이' };
+const TYPES = {
+  desc: ['묘사', 'Ask them to describe it in detail in the present tense: for a place or thing, what it is like and where it is; for an activity, what it involves, where and with whom.'],
+  routine: ['루틴·습관', 'Ask about their typical routine: what they usually do from beginning to end, how often and with whom.'],
+  first: ['계기·변화', 'Ask how they first got into it or first experienced it, and how things have changed since then.'],
+  recent: ['최근 경험', 'Ask about the most recent time: when, where, with whom, and everything that happened from start to finish.'],
+  memo: ['기억에 남는 경험', 'Ask about one memorable, surprising or troublesome episode: what happened, why it stands out and how they dealt with it.'],
+  cmp: ['비교·변화', 'Ask them to compare the past with the present (or two things) and explain the differences and what caused the changes.'],
+  issue: ['이슈·의견', 'Ask about an issue or concern people currently talk about regarding this topic: what it is, why it matters and what could be done.'],
+  askava: ['Ava에게 질문하기', 'Ava briefly says something about herself and this topic, then asks the test-taker to ask HER three or four questions about it.'],
+  rp1: ['롤플레이: 정보 요청', 'Role-play setup: give a concrete situation and ask the test-taker to act it out by asking three or four questions to get the information they need.'],
+  rp2: ['롤플레이: 문제 해결', 'Same situation: announce a specific problem that has come up. The test-taker must explain it (in person or by voicemail) and offer two or three alternatives.'],
+  rp3: ['롤플레이: 관련 경험', 'Close the role-play and ask whether they have had a similar real experience: what happened and how they resolved it.']
+};
+const ANGLES = ['a specific place', 'the people involved', 'something that went wrong', 'the things or equipment used', 'childhood', 'how it changed over the years', 'the weather or season', 'money and costs', 'a friend or family member', 'the very first time', 'a surprise', 'planning and preparation', 'what they like least about it', 'a recent change', 'technology'];
+const LEVEL_DESC = {
+  3: '친숙한 주제로 짧은 문장을 이어서 말할 수 있는 단계예요.',
+  4: '일상 주제로 대화하고 간단한 질문도 할 수 있는 단계예요.',
+  5: '경험과 사건을 문단으로 풀어서 설명할 수 있는 단계예요.',
+  6: '사회적인 주제까지 길고 자세하게 말할 수 있는 단계예요.'
+};
+const SCORE_LABELS = [['task', '과제 수행'], ['text_type', '문장 구성'], ['grammar', '문법'], ['vocab', '어휘'], ['detail', '내용·디테일']];
+
+/* ---------- state ---------- */
+const fresh = () => ({
+  phase: 'setup',
+  prefs: { status: 'student', home: 'family', topics: DEFAULT_TOPICS.slice(), level: 5, adjust: 'same', surprise: 'real', mode: 'exam' },
+  recent: { surprise: [], questions: [] },
+  exam: null, result: null
+});
+let S = fresh();
+let busy = null;            // AbortController while an AI call runs
+let micState = 'idle';
+let tStart = null;          // when the current answer started
+let tick = null;
+let speakToken = 0;
+let saveTimer = null;
+const save = () => store.set(S);
+const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(save, 600); };
+
+function adopt(data) {
+  if (!data || typeof data !== 'object' || !data.prefs) return;
+  const base = fresh();
+  S = Object.assign(base, data);
+  S.prefs = Object.assign(fresh().prefs, data.prefs);
+  S.recent = Object.assign({ surprise: [], questions: [] }, data.recent);
+  if (!Array.isArray(S.prefs.topics)) S.prefs.topics = DEFAULT_TOPICS.slice();
+  const okExam = S.exam && Array.isArray(S.exam.questions) && Array.isArray(S.exam.answers);
+  if (!['setup', 'exam', 'done', 'result'].includes(S.phase) || (S.phase !== 'setup' && !okExam)) S.phase = 'setup';
+  if (S.phase === 'result' && !S.result) S.phase = 'done';
+  if (okExam) { S.exam.mode = S.exam.mode || 'exam'; if (!Array.isArray(S.exam.fb)) S.exam.fb = []; }
+  if (S.phase === 'exam' && S.exam.endsAt && Date.now() > S.exam.endsAt) { S.exam.timeUp = true; S.phase = 'done'; }
+}
+
+/* ---------- standalone mode: opened outside Claude, the page calls Gemini or OpenAI with the user's own API key ---------- */
+const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
+const CONN_KEY = 'opic-ai-conn-v1';
+const PROVIDERS = { gemini: 'Gemini', openai: 'OpenAI' };
+let CONN = { provider: 'gemini', gemini: { key: '', model: '', grade: '', list: [] }, openai: { key: '', model: '', grade: '', list: [] } };
+try { const c = JSON.parse(localStorage.getItem(CONN_KEY)); if (c && c.gemini && c.openai && PROVIDERS[c.provider]) CONN = c; } catch (e) {}
+const saveConn = () => { try { localStorage.setItem(CONN_KEY, JSON.stringify(CONN)); } catch (e) {} };
+const conn = () => CONN[CONN.provider];
+const apiErr = (code, detail) => ({ code, message: String(detail || code), detail: detail ? String(detail).slice(0, 160) : '' });
+
+async function apiFetch(url, init) {
+  let res, body = null;
+  try { res = await fetch(url, init); }
+  catch (e) { throw (e && e.name === 'AbortError') ? apiErr('cancelled') : apiErr('network', e && e.message); }
+  try { body = await res.json(); } catch (e) {}
+  if (res.ok) return body || {};
+  const msg = (body && body.error && (body.error.message || body.error.status)) || ('HTTP ' + res.status);
+  if (res.status === 429) throw apiErr('rate_limited', msg);
+  if (res.status === 401 || res.status === 403 || /api key/i.test(msg)) throw apiErr('bad_key', msg);
+  throw apiErr('upstream_error', msg);
+}
+async function listModels(p, key) {
+  if (p === 'gemini') {
+    const d = await apiFetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': key } });
+    const ver = n => parseFloat((n.match(/^gemini-(\d+(?:\.\d+)?)/) || [])[1]) || 0;
+    return (d.models || [])
+      .filter(m => /^models\/gemini/.test(m.name || '') && (!m.supportedGenerationMethods || m.supportedGenerationMethods.includes('generateContent')) && !/(image|tts|audio|live|embedding|robotics|computer-use)/.test(m.name))
+      .map(m => m.name.replace(/^models\//, '')).sort((a, b) => ver(b) - ver(a) || a.localeCompare(b));
+  }
+  const d = await apiFetch('https://api.openai.com/v1/models', { headers: { Authorization: 'Bearer ' + key } });
+  return (d.data || [])
+    .filter(m => /^(gpt-|o\d|chatgpt-)/.test(m.id || '') && !/(audio|realtime|transcribe|tts|image|embedding|search|instruct|codex|moderation)/.test(m.id) && !/-\d{4}-\d{2}-\d{2}$/.test(m.id))
+    .sort((a, b) => (b.created || 0) - (a.created || 0)).map(m => m.id);
+}
+async function callModel(prompt, opts) {
+  const p = CONN.provider, c = conn(), signal = opts && opts.signal;
+  if (!c.key) throw apiErr('no_key');
+  const model = (opts && opts.modelTier === 'complex' && c.grade) || c.model;   // grading may use a stronger model
+  if (!model) throw apiErr('no_model');
+  let text = '';
+  if (p === 'gemini') {
+    const d = await apiFetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST', signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': c.key },
+      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] }) });
+    const cand = d.candidates && d.candidates[0];
+    text = ((cand && cand.content && cand.content.parts) || []).filter(x => !x.thought).map(x => x.text || '').join('');
+    if (!text && d.promptFeedback && d.promptFeedback.blockReason) throw apiErr('refused', d.promptFeedback.blockReason);
+  } else {
+    const d = await apiFetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST', signal, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + c.key },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }) });
+    const m = d.choices && d.choices[0] && d.choices[0].message;
+    text = (m && m.content) || '';
+    if (!text && m && m.refusal) throw apiErr('refused', m.refusal);
+  }
+  if (!text.trim()) throw apiErr('empty_completion');
+  return text;
+}
+function parseLoose(text) {
+  const tries = [text, (text.match(/```(?:json)?\s*([\s\S]*?)```/) || [])[1]];
+  const a = text.search(/[\[{]/), b = Math.max(text.lastIndexOf(']'), text.lastIndexOf('}'));
+  if (a >= 0 && b > a) tries.push(text.slice(a, b + 1));
+  for (const t of tries) { if (t) { try { return JSON.parse(t); } catch (e) {} } }
+  throw { code: 'invalid_json', message: 'no JSON in reply', text };
+}
+// same call shape as Claude's page capability, so the rest of the page does not care who answers
+const localSample = async (prompt, opts) => {
+  const text = await callModel(prompt, opts);
+  if (opts && opts.signal && opts.signal.aborted) throw apiErr('cancelled');
+  if (opts && opts.onText) opts.onText({ text, delta: text });
+  return { text, truncated: false };
+};
+localSample.json = async (prompt, opts) => parseLoose((await localSample(prompt, Object.assign({}, opts, { onText: null }))).text);
+
+function localDictation() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return null;
+  const subs = { partial: [], final: [], state: [] }, waiters = [];
+  const android = /Android/i.test(navigator.userAgent);
+  let rec = null, state = 'idle', want = false, endReason = 'stopped';
+  const set = (s, reason) => { state = s; subs.state.forEach(f => f({ state: s, reason })); };
+  const begin = () => {
+    rec = new SR(); rec.lang = 'en-US'; rec.interimResults = true; rec.continuous = !android;
+    rec.onstart = () => set('listening');
+    rec.onresult = e => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript.trim();
+        if (e.results[i].isFinal) { if (t) subs.final.forEach(f => f({ text: ' ' + t })); } else interim += ' ' + t;
+      }
+      subs.partial.forEach(f => f({ text: interim.trim() }));
+    };
+    rec.onerror = e => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { want = false; endReason = 'not_granted'; }
+      else if (e.error === 'network' || e.error === 'audio-capture') { want = false; endReason = 'upstream_error'; }
+    };
+    rec.onend = () => {
+      if (want) { try { begin(); return; } catch (x) { endReason = 'upstream_error'; } }   // the browser ends a session after a pause: keep listening
+      rec = null; want = false; set('idle', endReason);
+      waiters.splice(0).forEach(f => f());
+    };
+    rec.start();
+  };
+  return {
+    active: () => state !== 'idle',
+    start: () => new Promise((res, rej) => {
+      if (state !== 'idle') return res();
+      want = true; endReason = 'stopped'; set('starting');
+      try { begin(); res(); } catch (x) { want = false; rec = null; set('idle', 'upstream_error'); rej({ code: 'upstream_error', message: String(x) }); }
+    }),
+    stop: () => new Promise(res => {
+      if (state === 'idle' || !rec) return res();
+      want = false; waiters.push(res); set('finishing');
+      try { rec.stop(); } catch (x) {}
+      setTimeout(res, 1500);                    // never leave "next" hanging if no end event comes
+    }),
+    onPartial: f => { subs.partial.push(f); }, onFinal: f => { subs.final.push(f); }, onState: f => { subs.state.push(f); }
+  };
+}
+const LOCAL = STANDALONE ? { sample: localSample, dictation: localDictation() } : null;
+
+/* ---------- capabilities: Claude's inside Claude, the local ones above elsewhere (all optional; the page works without voice) ---------- */
+const CAP = { sample: null, dict: null, tts: null, ready: { sample: false, dict: false, tts: false }, sampleOff: false, dictOff: false, ttsOff: false, synthOff: false };
+const use = name => (STANDALONE ? Promise.resolve(LOCAL[name] || null) : Promise.resolve().then(() => window.claude.use(name)).catch(() => null));
+const pSample = use('sample').then(v => { CAP.sample = v; CAP.ready.sample = true; capChanged(); return v; });
+const pTts = use('tts').then(v => { CAP.tts = v; CAP.ready.tts = true; capChanged(); return v; });
+use('dictation').then(v => { CAP.dict = v; CAP.ready.dict = true; if (v) wireDictation(v); capChanged(); });
+
+function capChanged() {
+  if (S.phase === 'setup') paintCaps();
+  if (S.phase === 'exam') syncExam();
+}
+function audioMode() {
+  if (CAP.tts && !CAP.ttsOff) return 'claude';
+  if (!CAP.ready.tts) return 'pending';
+  if (!CAP.tts && !CAP.synthOff && 'speechSynthesis' in window) return 'browser';
+  return 'none';
+}
+function aiError(e) {
+  const c = e && e.code, tail = e && e.detail ? ` (${e.detail})` : '';
+  if (c === 'cancelled') return '';
+  if (c === 'no_key' || c === 'no_model') return 'API 키와 모델이 아직 없어요. 처음 화면의 AI 연결에서 키를 넣고 연결 확인을 눌러 주세요.';
+  if (c === 'bad_key') return 'API 키가 맞지 않거나 권한이 없어요. 처음 화면의 AI 연결에서 키를 확인해 주세요.' + tail;
+  if (c === 'network') return 'AI 서버에 연결하지 못했어요. 인터넷 연결을 확인한 뒤 다시 눌러 주세요.' + tail;
+  if (c === 'rate_limited' && STANDALONE) return '이 API 키의 사용량 한도에 걸렸어요. 잠시 뒤에 다시 누르거나 다른 모델을 골라 주세요.' + tail;
+  if (['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed'].includes(c)) {
+    CAP.sampleOff = true;
+    return '이 페이지에서 Claude를 쓸 수 없는 상태예요. 페이지를 새로 고친 뒤 권한 요청이 뜨면 허용해 주세요.';
+  }
+  if (c === 'rate_limited') return 'Claude 사용량 한도에 걸렸어요. 잠시 뒤에 다시 눌러 주세요.';
+  if (c === 'session_expired') return '로그인이 만료됐어요. Claude에 다시 로그인한 뒤 눌러 주세요.';
+  if (c === 'refused') return 'AI가 이 요청을 처리하지 않았어요. 내용을 확인한 뒤 다시 눌러 주세요.';
+  return 'AI 응답을 제대로 받지 못했어요. 다시 눌러 주세요.' + tail;
+}
+
+/* ---------- blueprint: the page picks topics and question types at random, AI writes the questions ---------- */
+function buildBlueprint(p) {
+  const L1 = p.level, L2 = clamp(p.level + ({ easy: -1, same: 0, hard: 1 }[p.adjust] || 0), 1, 6);
+  let mine = SURVEY.flatMap(g => g[1]).filter(t => p.topics.includes(t[0]));
+  mine.push(['home', '사는 곳', 'your home and the area you live in']);
+  if (p.status === 'student') mine.push(['school', '학교·수업', 'your school and your classes']);
+  if (p.status === 'worker') mine.push(['work', '직장·업무', 'your job and your workplace']);
+  mine = shuffle(mine);
+  const recent = S.recent.surprise || [];
+  let pool = SURPRISE.filter(t => !recent.includes(t[0]));
+  if (pool.length < 6) pool = SURPRISE.slice();
+  pool = shuffle(pool);
+  const usedSurprise = [];
+  const takeSurvey = () => (mine.length ? mine.shift() : null);
+  const takeSurprise = () => { const t = pool.shift(); usedSurprise.push(t[0]); return t; };
+  const q = [{ no: 1, cat: 'self', catKo: CAT.self, topicKo: '자기소개', topicEn: 'self-introduction', typeKo: '자기소개', typeEn: '', level: L1,
+    text: 'Let\'s start the interview now. Tell me a little about yourself.' }];
+  const add = (no, cat, topic, type, level) => q.push({ no, cat, catKo: CAT[cat], topicKo: topic[1], topicEn: topic[2], typeKo: TYPES[type][0], typeEn: TYPES[type][1], level, text: '' });
+
+  const nSur = p.surprise === 'focus' ? 3 : pick([1, 2]);
+  shuffle([0, 1, 2].map(i => (i < nSur ? 'surprise' : 'survey'))).forEach((cat, i) => {
+    const lvl = i < 2 ? L1 : L2;               // difficulty is re-adjusted after question 7
+    let topic = cat === 'survey' ? takeSurvey() : null, c = cat;
+    if (!topic) { topic = takeSurprise(); c = 'surprise'; }
+    const types = lvl >= 5 ? [pick(['desc', 'routine']), pick(['first', 'recent', 'cmp']), 'memo'] : ['desc', pick(['routine', 'first']), pick(['recent', 'memo'])];
+    types.forEach((t, k) => add(2 + i * 3 + k, c, topic, t, lvl));
+  });
+  const rpTopic = (Math.random() < 0.5 && mine.length) ? takeSurvey() : pick(RP);
+  ['rp1', 'rp2', 'rp3'].forEach((t, k) => add(11 + k, 'roleplay', rpTopic, t, L2));
+  let last = Math.random() < (L2 >= 5 ? 0.6 : 0.3) ? null : takeSurvey(), lastCat = 'survey';
+  if (!last) { last = takeSurprise(); lastCat = 'surprise'; }
+  (L2 >= 5 ? ['cmp', 'issue'] : ['desc', 'askava']).forEach((t, k) => add(14 + k, lastCat, last, t, L2));
+  return { questions: q, usedSurprise, label: L1 + '-' + L2 };
+}
+
+function genPrompt(bp, p) {
+  const who = { student: 'a university student', worker: 'a company employee', none: 'not currently working or studying' }[p.status];
+  const home = { alone: 'lives alone', family: 'lives with family', mates: 'lives with roommates or in a dormitory' }[p.home];
+  const kind = { survey: 'survey topic', surprise: 'surprise topic', roleplay: 'role-play' };
+  const slots = bp.questions.filter(x => x.no > 1).map(x => `${x.no}. [${kind[x.cat]}: ${x.topicEn}] [level ${x.level}] ${x.typeEn}`).join('\n');
+  const avoid = (S.recent.questions || []).slice(0, 28).map(t => '- ' + t).join('\n');
+  return [
+    'You are writing a brand-new English OPIc (Oral Proficiency Interview - computer) mock test. You are the interviewer, Ava, speaking directly to one test-taker.',
+    `Test-taker: ${who}, ${home}.`,
+    '',
+    'Write one question for each numbered slot below. Consecutive slots that share a topic form a set: each question must take a different angle and build on the one before, never repeating it.',
+    slots,
+    '',
+    'Style rules:',
+    '- Natural spoken English addressed to "you". Plain text only: no numbering, labels, quotation marks, Korean or stage directions.',
+    '- Level 1-2: 15-30 words, one simple request. Level 3-4: 30-50 words with one or two sub-questions. Level 5-6: 45-80 words with several sub-questions and a request for as much detail as possible.',
+    '- Survey-topic questions usually begin by referring to the background survey (for example, "You indicated in the survey that you ..."). Surprise-topic questions begin directly (for example, "I\'d like to talk about ...").',
+    '- The three role-play questions share one concrete, invented situation: the first sets the scene and tells the test-taker to act it out by asking questions; the second announces a specific complication to resolve; the third closes the role-play and asks about a similar real experience.',
+    '- Invent fresh wording and fresh situations every time. Do not reproduce published test questions.',
+    `- Variety seed ${Math.random().toString(36).slice(2, 8)}: where it fits, lean on these angles: ${shuffle(ANGLES).slice(0, 3).join(', ')}.`,
+    avoid ? 'Do not resemble these recently used questions:\n' + avoid : '',
+    '',
+    'Reply with only a JSON array of exactly 14 strings: the question texts for slots 2 to 15, in order. Shape: ["...", "..."]'
+  ].join('\n');
+}
+
+function gradePrompt(E) {
+  const data = E.questions.map((q, i) => {
+    const a = E.answers[i], t = a.text.trim().slice(0, 2500);
+    return { no: q.no, kind: q.catKo, topic: q.topicEn, type: q.typeKo, question: q.text, answer: t, words: words(t), seconds: Math.round(a.sec), input: a.voice ? 'speech-to-text' : 'typed' };
+  });
+  return [
+    'You are an experienced, strict but fair OPIc rater who follows the ACTFL proficiency guidelines. Rate this English OPIc mock test taken by a Korean learner.',
+    'Scale, low to high: NL, NM, NH, IL, IM1, IM2, IM3, IH, AL.',
+    'Anchors: NL/NM = isolated words and memorized phrases. NH = short memorized sentences that break down beyond them. IL = simple sentences on familiar topics, mostly present tense. IM1-IM3 = strings of connected sentences on familiar topics, can ask questions and handle a simple transaction; IM3 is consistent, begins to form paragraphs and uses the past tense with errors. IH = mostly paragraph-length narration and description across past, present and future and can deal with a complication, but with noticeable breakdowns. AL = sustained, organized paragraphs in all time frames, complications handled confidently, comparison and opinion questions answered with support.',
+    'You only have transcripts (typed, or produced by speech-to-text). Do not judge pronunciation, intonation or accent. Ignore capitalization, punctuation and obvious speech-recognition slips. Judge whether each task was actually completed, text type (words, sentences or connected paragraphs), control of time frames, grammar accuracy, vocabulary range, detail and organization, and how the role-play complication was handled. An empty answer is no response and counts against the rating. Answers much shorter than a real spoken answer limit the level. Do not inflate: rate what is on the page.',
+    `Self-assessment difficulty chosen: ${E.label}. "seconds" is the time spent on the question, thinking included.`,
+    '',
+    'Test data (JSON):',
+    JSON.stringify(data),
+    '',
+    'Reply with only one JSON object in exactly this shape. Write every explanation in Korean (polite 해요체); keep quoted learner phrases and corrections in English.',
+    '{"level":"IM2","summary":"3~4문장 총평","scores":{"task":3.5,"text_type":3,"grammar":2.5,"vocab":3,"detail":3},"strengths":["...","..."],"priorities":["가장 먼저 고칠 것","...","..."],"questions":[{"no":1,"score":3,"feedback":"1~2문장","fixes":[{"from":"learner phrase","to":"corrected phrase","why":"짧은 이유"}]}]}',
+    'Rules: "level" is exactly one label from the scale. Scores run 0-5 in steps of 0.5. Give 2-3 strengths and exactly 3 priorities, each concrete and tied to what this learner actually said. Include every question number once in "questions"; at most 2 fixes per question and none for empty answers; "from" must be copied from the learner\'s answer.'
+  ].join('\n');
+}
+
+function modelPrompt(q, a, level) {
+  const target = LEVELS[Math.min(LEVELS.length - 1, Math.max(4, LEVELS.indexOf(level) + 1))];
+  return [
+    'You are an OPIc tutor for a Korean learner. Below are an OPIc question and the learner\'s transcribed answer.',
+    `The learner\'s estimated level is ${level}. Rewrite the answer as a model answer at ${target} level: keep the learner\'s own content and ideas where they exist, fix the errors, add connectors and a little concrete detail, natural spoken English, 110-160 words. If the answer is empty, write a model answer at that level.`,
+    'Then list three useful expressions from your version with their Korean meanings.',
+    'Plain text only, no markdown, in exactly this layout:',
+    '<the model answer as one paragraph>',
+    '',
+    '핵심 표현',
+    '- expression: 한국어 뜻',
+    '',
+    'Question: ' + q.text,
+    'Learner answer: ' + (a.text.trim().slice(0, 2500) || '(no answer)')
+  ].join('\n');
+}
+
+function normResult(r, n) {
+  if (!r || typeof r !== 'object') throw new Error('shape');
+  let lv = String(r.level || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (lv === 'IM') lv = 'IM2';
+  if (!LEVELS.includes(lv)) throw new Error('level');
+  const num = v => clamp(Math.round((Number(v) || 0) * 2) / 2, 0, 5);
+  const list = v => (Array.isArray(v) ? v.map(String).filter(Boolean).slice(0, 4) : []);
+  const by = {};
+  (Array.isArray(r.questions) ? r.questions : []).forEach(x => { if (x && x.no) by[x.no] = x; });
+  const questions = [];
+  for (let i = 1; i <= n; i++) {
+    const x = by[i] || {};
+    questions.push({
+      no: i, score: num(x.score), feedback: String(x.feedback || ''),
+      fixes: (Array.isArray(x.fixes) ? x.fixes : []).filter(f => f && f.from && f.to).slice(0, 2).map(f => ({ from: String(f.from), to: String(f.to), why: String(f.why || '') }))
+    });
+  }
+  const sc = r.scores || {};
+  return { level: lv, summary: String(r.summary || ''), scores: Object.fromEntries(SCORE_LABELS.map(([k]) => [k, num(sc[k])])), strengths: list(r.strengths), priorities: list(r.priorities), questions };
+}
+
+/* ---------- setup screen ---------- */
+function ladderHtml(hit) {
+  return `<ol class="ladder" aria-label="오픽 등급">${LEVELS.map(l => `<li class="${l === hit ? 'hit' : ''}"><i></i><span class="mono">${l}</span></li>`).join('')}</ol>`;
+}
+function seg(name, opts, cur) {
+  return `<div class="seg" role="group">${opts.map(([v, label]) => `<button type="button" data-${name}="${v}" aria-pressed="${String(v) === String(cur)}">${label}</button>`).join('')}</div>`;
+}
+function renderSetup() {
+  const p = S.prefs;
+  app.innerHTML = `
+  <header class="mast">
+    <p class="eyebrow mono">OPIc · English · Mock Test</p>
+    <h1>오픽 AI 모의고사</h1>
+    <p class="lede">시험을 시작할 때마다 AI가 15문항을 새로 출제해요. 끝나면 답변을 읽고 예상 등급과 고칠 점을 알려줘요.</p>
+    ${ladderHtml('')}
+    <ul class="caps" id="caps"></ul>
+  </header>
+  ${connHtml()}
+  <section class="sheet">
+    <div class="step"><span class="stepno mono">1</span><h2>Background Survey</h2><span class="stepko">배경 설문</span></div>
+    <div class="fields">
+      <label class="field" for="status"><span>현재 신분</span>
+        <select id="status"><option value="student">학생</option><option value="worker">직장인</option><option value="none">해당 없음</option></select></label>
+      <label class="field" for="home"><span>사는 형태</span>
+        <select id="home"><option value="family">가족과 함께</option><option value="alone">혼자</option><option value="mates">룸메이트·기숙사</option></select></label>
+    </div>
+    ${SURVEY.map(([g, items]) => `<fieldset class="chips"><legend>${g}</legend>${items.map(t => `<button type="button" class="chip" data-topic="${t[0]}" aria-pressed="${p.topics.includes(t[0])}"><i class="bub"></i>${t[1]}</button>`).join('')}</fieldset>`).join('')}
+    <p class="note" id="topicCount"></p>
+  </section>
+  <section class="sheet">
+    <div class="step"><span class="stepno mono">2</span><h2>Self Assessment</h2><span class="stepko">난이도 선택</span></div>
+    <div class="opt"><h3>시작 난이도</h3>${seg('level', [[3, '3'], [4, '4'], [5, '5'], [6, '6']], p.level)}<p class="note" id="levelDesc"></p></div>
+    <div class="opt"><h3>7번 문제 이후 난이도</h3>${seg('adjust', [['easy', '쉬운 질문'], ['same', '비슷한 질문'], ['hard', '어려운 질문']], p.adjust)}</div>
+    <div class="opt"><h3>돌발 주제 비중</h3>${seg('surprise', [['real', '실전처럼 1~2세트'], ['focus', '돌발 집중 3세트']], p.surprise)}</div>
+  </section>
+  <section class="sheet">
+    <div class="step"><span class="stepno mono">3</span><h2>Begin Test</h2><span class="stepko">시험 시작</span></div>
+    <div class="opt"><h3>진행 방식</h3>${seg('mode', [['exam', '실전 시험'], ['study', '한 문제씩 학습']], p.mode)}</div>
+    <ul class="facts" id="facts"></ul>
+    <button type="button" class="btn primary big" id="startBtn"></button>
+    <p class="status" id="genStatus" role="status"></p>
+  </section>`;
+  $('#status').value = p.status; $('#home').value = p.home;
+  paintSetup(); paintCaps();
+}
+function paintSetup() {
+  const p = S.prefs;
+  $('#topicCount').textContent = `${p.topics.length}개 선택했어요. 실제 시험에서는 12개 이상 골라야 해요.`;
+  $('#levelDesc').textContent = `${LEVEL_DESC[p.level]} 이번 시험은 ${p.level}-${clamp(p.level + ({ easy: -1, same: 0, hard: 1 }[p.adjust]), 1, 6)} 조합이에요.`;
+  $('#facts').innerHTML = (p.mode === 'study'
+    ? ['15문항을 한 문제씩 풀어요', '답할 때마다 피드백과 더 좋은 답변을 받아요', '문제는 몇 번이든 다시 듣고 다시 답할 수 있어요']
+    : ['15문항, 제한 시간 40분', '문제는 두 번까지 들을 수 있어요', '지나간 문제로는 돌아갈 수 없어요']).map(t => `<li>${t}</li>`).join('');
+  if (!busy) $('#startBtn').textContent = startLabel();
+}
+const startLabel = () => (S.prefs.mode === 'study' ? '새 문제로 학습 시작' : '새 문제로 시험 시작');
+function connHtml() {
+  if (!STANDALONE) return '';
+  const c = conn();
+  const opts = (sel, first) => (first ? `<option value="">${first}</option>` : '') + c.list.map(m => `<option value="${esc(m)}"${m === sel ? ' selected' : ''}>${esc(m)}</option>`).join('');
+  return `<section class="sheet" id="aiSheet">
+    <div class="step"><h2>AI Connection</h2><span class="stepko">AI 연결</span></div>
+    ${seg('provider', [['gemini', 'Gemini'], ['openai', 'OpenAI']], CONN.provider)}
+    <label class="field" for="apiKey"><span>${PROVIDERS[CONN.provider]} API 키</span>
+      <input type="password" id="apiKey" autocomplete="off" spellcheck="false" value="${esc(c.key)}" placeholder="${CONN.provider === 'gemini' ? 'Google AI Studio에서 만든 키' : 'OpenAI 플랫폼에서 만든 키'}"></label>
+    <div class="row"><button type="button" class="btn" id="keyCheck">연결 확인</button></div>
+    <div class="fields" id="modelFields" ${c.list.length ? '' : 'hidden'}>
+      <label class="field" for="aiModel"><span>모델 (출제·피드백)</span><select id="aiModel">${opts(c.model)}</select></label>
+      <label class="field" for="aiGrade"><span>채점 모델</span><select id="aiGrade">${opts(c.grade, '위와 같은 모델')}</select></label>
+    </div>
+    <p class="status" id="aiStatus" role="status">${c.list.length ? `연결됐어요. 고를 수 있는 모델이 ${c.list.length}개예요.` : '키를 넣고 연결 확인을 누르면 쓸 수 있는 모델을 불러와요.'}</p>
+    <p class="note">키는 ${CONN.provider === 'gemini' ? 'Google AI Studio(aistudio.google.com)' : 'OpenAI 플랫폼(platform.openai.com)'}에서 발급받아요. 이 브라우저에만 저장되고 고른 서비스로만 보내며, 출제와 채점은 그 서비스의 요금과 한도를 따라요.</p>
+  </section>`;
+}
+async function checkKey() {
+  const st = $('#aiStatus'), btn = $('#keyCheck'), p = CONN.provider, c = CONN[p];
+  c.key = $('#apiKey').value.trim(); saveConn();
+  if (!c.key) { st.className = 'status err'; st.textContent = 'API 키를 먼저 넣어 주세요.'; return; }
+  btn.disabled = true; st.className = 'status'; st.textContent = '연결을 확인하고 있어요…';
+  try {
+    const list = await listModels(p, c.key);
+    if (!list.length) throw apiErr('upstream_error', '쓸 수 있는 모델이 목록에 없어요');
+    c.list = list;
+    // default to a mid-priced model, never silently to the most expensive one
+    if (!list.includes(c.model)) c.model = list.find(m => (p === 'gemini' ? /flash/ : /terra/).test(m) && !/lite|preview|exp/.test(m)) || list[0];
+    if (!list.includes(c.grade)) c.grade = '';
+    saveConn();
+    if (S.phase === 'setup' && CONN.provider === p) renderSetup();
+  } catch (e) {
+    if (!btn.isConnected) return;
+    btn.disabled = false; st.className = 'status err'; st.textContent = aiError(e) || '연결을 확인하지 못했어요.';
+  }
+}
+function paintCaps() {
+  const el = $('#caps'); if (!el) return;
+  const lc = STANDALONE ? conn() : null;
+  const ai = lc ? (lc.key && lc.model ? `${PROVIDERS[CONN.provider]} · ${esc(lc.model)}` : 'API 키가 필요해요 (아래 AI 연결)')
+    : !CAP.ready.sample ? '확인 중' : (CAP.sample && !CAP.sampleOff) ? '연결됨' : '연결 안 됨 (Claude에 로그인한 상태로 이 페이지를 열어야 해요)';
+  const mic = !CAP.ready.dict ? '확인 중' : (CAP.dict && !CAP.dictOff) ? '말하면 글로 받아써요' : '이 환경에서는 직접 입력하거나 키보드의 마이크 버튼을 써요';
+  const m = audioMode();
+  const snd = m === 'pending' ? '확인 중' : m === 'claude' ? 'Claude 음성으로 읽어줘요' : m === 'browser' ? '기기 음성으로 읽어줘요' : '글로 보여줘요';
+  el.innerHTML = `<li><b>AI 출제·채점</b> ${ai}</li><li><b>답변 입력</b> ${mic}</li><li><b>문제 듣기</b> ${snd}</li>`;
+  const sb = $('#startBtn'); if (sb && !busy) sb.disabled = CAP.sampleOff;
+}
+
+async function startExam() {
+  if (busy) { busy.abort(); return; }
+  const btn = $('#startBtn'), st = $('#genStatus'), mode = S.prefs.mode;
+  const ctl = busy = new AbortController();
+  btn.textContent = '출제 취소'; st.className = 'status'; st.textContent = 'AI가 문제 15개를 새로 만드는 중이에요… 30초쯤 걸려요.';
+  const fail = msg => { if (busy === ctl) busy = null; if (S.phase !== 'setup') return; btn.textContent = startLabel(); st.className = 'status err'; st.textContent = msg; paintCaps(); };
+  const sample = await pSample;
+  if (ctl.signal.aborted) return fail('');
+  if (!sample) return fail('AI에 연결하지 못했어요. Claude에 로그인한 상태에서 이 페이지를 다시 열어 주세요.');
+  const bp = buildBlueprint(S.prefs);
+  let arr;
+  try {
+    arr = await sample.json(genPrompt(bp, S.prefs), { modelTier: 'default', cache: false, signal: ctl.signal });
+  } catch (e) { return fail(aiError(e)); }
+  if (Array.isArray(arr) && arr.length === 15) arr = arr.slice(1);
+  if (!Array.isArray(arr) || arr.length !== 14 || !arr.every(t => typeof t === 'string' && t.trim().length > 10)) return fail('문제가 온전히 만들어지지 않았어요. 다시 눌러 주세요.');
+  bp.questions.forEach((q, i) => { if (i > 0) q.text = arr[i - 1].trim(); });
+  S.recent.surprise = bp.usedSurprise.concat(S.recent.surprise || []).slice(0, 18);
+  S.recent.questions = arr.map(t => t.slice(0, 110)).concat(S.recent.questions || []).slice(0, 28);
+  S.exam = { mode, questions: bp.questions, label: bp.label, idx: 0, startedAt: Date.now(), endsAt: mode === 'exam' ? Date.now() + 40 * 60 * 1000 : null,
+    answers: bp.questions.map(() => ({ text: '', sec: 0, voice: false })), plays: bp.questions.map(() => 0), fb: bp.questions.map(() => null), timeUp: false };
+  S.result = null; S.phase = 'exam'; busy = null; save(); render();
+}
+
+/* ---------- exam screen ---------- */
+const curQ = () => S.exam.questions[S.exam.idx];
+const curA = () => S.exam.answers[S.exam.idx];
+const curSec = () => curA().sec + (tStart ? (Date.now() - tStart) / 1000 : 0);
+const beginAnswer = () => { if (!tStart) tStart = Date.now(); };
+
+function renderExam() {
+  const E = S.exam, q = curQ(), a = curA(), study = E.mode === 'study';
+  tStart = null;
+  const bubble = i => (i === E.idx ? 'now' : (study ? (E.fb[i] || E.answers[i].text.trim()) : i < E.idx) ? 'done' : '');
+  const tag = [q.catKo, q.topicKo, q.typeKo].filter((v, i, arr) => arr.indexOf(v) === i).join(' · ');
+  app.innerHTML = `
+  <div class="examtop">
+    <ol class="omr" aria-label="문항 진행 ${E.idx + 1}/${E.questions.length}">${E.questions.map((_, i) => `<li class="${bubble(i)}"></li>`).join('')}</ol>
+    <div class="examtop-row">
+      <span class="qno">Q${pad(q.no)} <small>/ ${E.questions.length}</small></span>
+      ${study ? `<span class="tagline">${esc(tag)}</span>` : '<span class="clock" id="clock" aria-label="남은 시간"></span>'}
+    </div>
+  </div>
+  <section class="sheet">
+    <div class="ava-row">
+      <div class="wave" id="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="ava-txt"><strong>Ava</strong><span id="avaState" role="status"></span></div>
+    </div>
+    <div class="row">
+      <button type="button" class="btn primary" id="playBtn"></button>
+      <button type="button" class="btn link" id="textBtn" aria-expanded="false">문제 글로 보기</button>
+    </div>
+    <p class="qtext" id="qtext" lang="en" hidden>${esc(q.text)}</p>
+  </section>
+  <section class="sheet">
+    <div class="answer-head"><label for="ans">내 답변</label><span class="meta"><span id="elapsed">0:00</span> · <span id="wc">0</span>단어</span></div>
+    <textarea id="ans" lang="en" spellcheck="false" autocapitalize="sentences" placeholder="영어로 답하면 여기에 글로 쌓여요. 직접 입력해도 돼요.">${esc(a.text)}</textarea>
+    <p class="partial" id="partial" lang="en" aria-live="polite"></p>
+    <div class="row"><button type="button" class="mic" id="micBtn" hidden><i class="dot"></i><span></span></button></div>
+    <p class="note" id="micHint"></p>
+  </section>
+  ${study ? `<section class="sheet" id="fbSheet" hidden>
+    <h2>피드백</h2>
+    <div class="stack" id="fbBody"></div>
+    <div class="row"><button type="button" class="btn" id="retryBtn">같은 문제 다시 답하기</button></div>
+  </section>` : ''}
+  <div class="examfoot">
+    ${study ? '<button type="button" class="btn primary big" id="fbBtn"></button>' : ''}
+    <button type="button" class="btn primary big" id="nextBtn"></button>
+  </div>
+  <div class="row" id="quitRow">${quitRowHtml()}</div>`;
+  if (study && E.fb[E.idx]) { $('#fbSheet').hidden = false; $('#fbBody').innerHTML = fbHtml(E.fb[E.idx], E.fb[E.idx].raw); }
+  syncExam(); updateWc(); startTick();
+  if (audioMode() === 'none') revealText('');
+}
+function syncExam() {
+  if (S.phase !== 'exam' || !$('#playBtn')) return;
+  const E = S.exam, plays = E.plays[E.idx], mode = audioMode();
+  const listening = micState === 'listening', moving = micState === 'starting' || micState === 'finishing';
+  const speaking = $('#wave').classList.contains('on');
+  const playBtn = $('#playBtn'), micBtn = $('#micBtn'), hint = $('#micHint'), state = $('#avaState');
+  playBtn.hidden = mode === 'none';
+  const study = E.mode === 'study', last = E.idx === E.questions.length - 1;
+  playBtn.textContent = speaking ? '듣는 중…' : plays === 0 ? '문제 듣기' : study ? '다시 듣기' : plays === 1 ? '다시 듣기 (1회 남음)' : '두 번 모두 들었어요';
+  playBtn.disabled = speaking || (!study && plays >= 2) || listening || moving;
+  if (!speaking) state.textContent = mode === 'none' ? '이 환경에서는 문제를 글로 보여드려요' : plays === 0 ? '버튼을 누르면 문제를 읽어드려요' : '이제 답변해 주세요';
+  const canDict = !!CAP.dict && !CAP.dictOff;
+  micBtn.hidden = !canDict;
+  micBtn.classList.toggle('on', listening);
+  micBtn.disabled = moving;
+  micBtn.querySelector('span').textContent = listening ? '말하기 멈춤' : moving ? '준비 중…' : curA().text ? '이어서 말하기' : '말하기 시작';
+  if (!hint.dataset.msg) hint.textContent = canDict ? '버튼을 누르고 영어로 답하세요. 받아쓴 글은 직접 고칠 수 있어요.'
+    : !CAP.ready.dict ? '음성 받아쓰기를 쓸 수 있는지 확인하고 있어요.'
+    : '이 환경에서는 받아쓰기 버튼을 쓸 수 없어요. 답변 칸을 누른 뒤 키보드의 마이크 버튼으로 말하면 글로 입력돼요.';
+  const nextBtn = $('#nextBtn');
+  if (!study) { nextBtn.textContent = last ? '시험 끝내기' : '다음 문제'; return; }
+  const has = !!E.fb[E.idx], fbBtn = $('#fbBtn'), prev = $('#prevBtn'), skip = $('#skipBtn');
+  fbBtn.hidden = has;
+  fbBtn.textContent = busy ? '피드백 취소' : curA().text.trim() ? '피드백 받기' : '답변 없이 모범 답안 보기';
+  nextBtn.hidden = !has;
+  nextBtn.textContent = last ? '학습 끝내기' : '다음 문제';
+  $('#retryBtn').hidden = !has;
+  if (prev) prev.hidden = E.idx === 0;
+  if (skip) { skip.hidden = has; skip.textContent = last ? '피드백 없이 끝내기' : '건너뛰기'; }
+}
+function quitRowHtml() {
+  const study = S.exam.mode === 'study';
+  return (study ? '<button type="button" class="btn link" id="prevBtn">이전 문제</button><button type="button" class="btn link" id="skipBtn"></button>' : '')
+    + `<button type="button" class="btn link" id="quitBtn">${study ? '학습 그만두기' : '시험 그만두기'}</button>`;
+}
+function setHint(msg) { const h = $('#micHint'); if (h) { h.dataset.msg = '1'; h.textContent = msg; } }
+function updateWc() { const w = $('#wc'); if (w) w.textContent = words(curA().text); }
+function revealText(note) {
+  const t = $('#qtext'), b = $('#textBtn'); if (!t) return;
+  t.hidden = false; b.setAttribute('aria-expanded', 'true'); b.textContent = '문제 글 숨기기';
+  if (note) $('#avaState').textContent = note;
+  beginAnswer();
+}
+function setSpeaking(on) { const w = $('#wave'); if (w) { w.classList.toggle('on', on); if (on) $('#avaState').textContent = 'Ava가 문제를 읽고 있어요'; } syncExam(); }
+
+function stopSpeaking() {
+  speakToken++;
+  try { if (CAP.tts && CAP.tts.active()) CAP.tts.stop().catch(() => {}); } catch (e) {}
+  try { if (!CAP.tts && 'speechSynthesis' in window) speechSynthesis.cancel(); } catch (e) {}
+  const w = $('#wave'); if (w) w.classList.remove('on');
+}
+async function playQuestion() {
+  const E = S.exam, idx = E.idx;
+  if (E.mode !== 'study' && E.plays[idx] >= 2) return;
+  let mode = audioMode();
+  if (mode === 'pending') { $('#avaState').textContent = '음성을 준비하고 있어요…'; await pTts; if (S.phase !== 'exam' || S.exam.idx !== idx) return; mode = audioMode(); }
+  if (mode === 'none') return revealText('음성을 쓸 수 없어서 문제를 글로 보여드려요.');
+  const text = E.questions[idx].text, token = ++speakToken;
+  E.plays[idx]++; save(); setSpeaking(true);
+  let settled = false;
+  const done = ok => {
+    if (settled) return; settled = true;
+    if (token !== speakToken || S.phase !== 'exam') return;
+    setSpeaking(false);
+    if (ok) beginAnswer(); else revealText('음성 재생이 안 돼서 문제를 글로 보여드려요.');
+  };
+  if (mode === 'claude') {
+    CAP.tts.speak(text, { language: 'en' }).then(() => done(true), e => {
+      const c = e && e.code;
+      if (c === 'stopped') { settled = true; if (token === speakToken) { setSpeaking(false); beginAnswer(); } return; }
+      if (c === 'not_granted' || c === 'unavailable') CAP.ttsOff = true;   // respect the viewer's choice: no other voice
+      done(false);
+    });
+    return;
+  }
+  try {
+    const u = new SpeechSynthesisUtterance(text);
+    const vs = speechSynthesis.getVoices();
+    const v = vs.find(x => /^en[-_]US/i.test(x.lang)) || vs.find(x => /^en/i.test(x.lang));
+    if (v) u.voice = v;
+    u.lang = 'en-US'; u.rate = 0.95;
+    let started = false;
+    u.onstart = () => { started = true; };
+    u.onend = () => done(true);
+    u.onerror = () => done(false);
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+    setTimeout(() => { if (!started && !settled) { try { speechSynthesis.cancel(); } catch (e) {} CAP.synthOff = true; done(false); } }, 4000);
+  } catch (e) { CAP.synthOff = true; done(false); }
+}
+
+function wireDictation(d) {
+  d.onPartial(({ text }) => { const el = $('#partial'); if (el) el.textContent = text || ''; });
+  d.onFinal(({ text }) => {
+    if (S.phase !== 'exam' || !text) return;
+    const a = curA();
+    a.text = a.text ? a.text + text : text.replace(/^\s+/, '');
+    a.voice = true;
+    const ta = $('#ans'); if (ta) { ta.value = a.text; ta.scrollTop = ta.scrollHeight; }
+    updateWc(); saveSoon();
+  });
+  d.onState(({ state, reason }) => {
+    micState = state;
+    if (state === 'idle') {
+      const p = $('#partial'); if (p) p.textContent = '';
+      if (reason === 'not_granted' || reason === 'unavailable') CAP.dictOff = true;
+      if (reason === 'hidden') setHint('화면을 벗어나서 받아쓰기가 멈췄어요. 버튼을 눌러 이어서 말하세요.');
+    }
+    syncExam();
+  });
+}
+function micClick() {
+  const d = CAP.dict; if (!d) return;
+  if (d.active()) { d.stop().catch(() => {}); return; }
+  stopSpeaking(); beginAnswer();
+  d.start({ language: 'en' }).catch(e => {
+    const c = e && e.code;
+    if (c === 'not_granted' || c === 'unavailable') { CAP.dictOff = true; delete $('#micHint').dataset.msg; syncExam(); }
+    else if (c === 'rate_limited') setHint('잠시 뒤에 다시 눌러 주세요.');
+    else if (c !== 'stopped' && c !== 'dismissed') setHint('마이크를 켜지 못했어요. 다시 눌러 주세요.');
+  });
+}
+async function settleAnswer() {
+  stopSpeaking();
+  if (CAP.dict && micState !== 'idle') { try { await CAP.dict.stop(); } catch (e) {} }
+  const a = curA(), ta = $('#ans');
+  if (ta) a.text = ta.value;
+  a.sec = curSec(); tStart = null;
+}
+let navLock = false;
+async function go(delta) {
+  if (navLock) return;
+  navLock = true;
+  if (busy) busy.abort();
+  try {
+    await settleAnswer();
+    const E = S.exam, n = E.idx + delta;
+    if (n >= E.questions.length) finishExam(false);
+    else { E.idx = Math.max(0, n); save(); render(); }
+  } finally { navLock = false; }
+}
+
+/* ---------- study mode: feedback on one answer at a time ---------- */
+function studyPrompt(q, a) {
+  const t = a.text.trim().slice(0, 2500);
+  return [
+    'You are an OPIc tutor and rater (ACTFL guidelines) helping a Korean learner practise one question at a time.',
+    `Question (${q.catKo}; topic: ${q.topicEn}; type: ${q.typeKo}; difficulty level ${q.level} of 6): ${q.text}`,
+    `Learner answer (${a.voice ? 'speech-to-text' : 'typed'}, ${words(t)} words, ${Math.round(a.sec)} seconds including thinking): ${t || '(no answer)'}`,
+    '',
+    'You only have the transcript: do not judge pronunciation or intonation, and ignore capitalization, punctuation and obvious speech-recognition slips. Be honest and specific; do not inflate.',
+    'Reply in plain text with no markdown, using exactly these line prefixes, one item per line, in this order:',
+    'SCORE: 0 to 5 in steps of 0.5 for this one answer (task completion, sentence-to-paragraph structure, grammar, vocabulary, detail)',
+    'LEVEL: the single OPIc level this answer sounds like: NL, NM, NH, IL, IM1, IM2, IM3, IH or AL',
+    'FEEDBACK: 2-3 sentences in Korean (해요체): what worked, and the most important thing to fix, tied to what the learner actually said',
+    'FIX: phrase copied from the learner\'s answer => corrected phrase :: short reason in Korean',
+    'BETTER: the learner\'s answer rewritten one level higher, all on one line: keep their content and ideas, fix the errors, add connectors and a little concrete detail, natural spoken English, 110-160 words',
+    'EXPR: a useful expression taken from BETTER :: its Korean meaning',
+    'TIP: one sentence in Korean on how to structure an answer to this type of question next time',
+    'Write 0 to 3 FIX lines and exactly 3 EXPR lines. If there is no answer, give SCORE 0, write no FIX lines, and make BETTER a model answer at IM3 to IH level.'
+  ].join('\n');
+}
+function parseStudy(text) {
+  const r = { score: null, level: '', feedback: '', fixes: [], better: '', exprs: [], tip: '' };
+  const unq = s => s.trim().replace(/^["“'`]+|["”'`]+$/g, '');
+  let last = null;
+  String(text).split(/\r?\n/).forEach(line => {
+    const m = line.replace(/^[\s*#>\-]+/, '').match(/^(SCORE|LEVEL|FEEDBACK|FIX|BETTER|EXPR|TIP)\s*\**\s*[:：]\s*\**\s*(.*)$/i);
+    if (!m) { const t = line.trim(); if (t && last) r[last] += (r[last] ? ' ' : '') + t; return; }
+    const k = m[1].toUpperCase(), v = m[2].trim();
+    last = null;
+    if (k === 'SCORE') { const n = parseFloat(v); if (!isNaN(n)) r.score = clamp(Math.round(n * 2) / 2, 0, 5); }
+    else if (k === 'LEVEL') { const lv = v.toUpperCase().replace(/[^A-Z0-9]/g, ''); r.level = LEVELS.includes(lv) ? lv : ''; }
+    else if (k === 'FEEDBACK') { r.feedback = v; last = 'feedback'; }
+    else if (k === 'BETTER') { r.better = v; last = 'better'; }
+    else if (k === 'TIP') { r.tip = v; last = 'tip'; }
+    else if (k === 'FIX') { const p = v.split('=>'); if (p.length > 1) { const w = p.slice(1).join('=>').split('::'); r.fixes.push({ from: unq(p[0]), to: unq(w[0]), why: w.slice(1).join(' ').trim() }); } }
+    else if (k === 'EXPR') { const p = v.split('::'); if (p[0].trim()) r.exprs.push({ en: unq(p[0]), ko: p.slice(1).join(' ').trim() }); }
+  });
+  return r;
+}
+function fixesHtml(fixes) {
+  return `<ul class="fixes">${fixes.map(f => `<li><del lang="en">${esc(f.from)}</del><ins lang="en">${esc(f.to)}</ins>${f.why ? `<span>${esc(f.why)}</span>` : ''}</li>`).join('')}</ul>`;
+}
+function fbHtml(r, raw) {
+  if (r.score == null && !r.feedback && !r.better) return raw ? `<p class="a-en">${esc(raw)}</p>` : '<p class="note">피드백을 쓰는 중이에요…</p>';
+  return `<div class="row">${r.score != null ? `<span class="pill ${r.score >= 4 ? 'hi' : r.score < 2 ? 'lo' : ''}">${r.score}/5</span>` : ''}${r.level ? `<span class="pill">이 답변 수준 ${r.level}</span>` : ''}</div>
+    ${r.feedback ? `<p>${esc(r.feedback)}</p>` : ''}
+    ${r.fixes.length ? `<h4>이렇게 고쳐 보세요</h4>${fixesHtml(r.fixes)}` : ''}
+    ${r.better ? `<h4>더 좋은 답변</h4><p class="model" lang="en">${esc(r.better)}</p>` : ''}
+    ${r.exprs.length ? `<h4>핵심 표현</h4><ul class="plain">${r.exprs.map(x => `<li><b lang="en">${esc(x.en)}</b>${x.ko ? ' ' + esc(x.ko) : ''}</li>`).join('')}</ul>` : ''}
+    ${r.tip ? `<h4>다음에는 이렇게</h4><p>${esc(r.tip)}</p>` : ''}`;
+}
+async function studyFeedback() {
+  if (busy) { busy.abort(); return; }
+  const E = S.exam, i = E.idx, sheet = $('#fbSheet'), body = $('#fbBody');
+  const ctl = busy = new AbortController();
+  const here = () => S.phase === 'exam' && S.exam === E && E.idx === i && !!$('#fbBody');
+  const fail = msg => {
+    if (busy === ctl) busy = null;
+    if (!here()) return;
+    if (msg) body.innerHTML = `<p class="status err">${esc(msg)}</p>`; else sheet.hidden = true;
+    syncExam();
+  };
+  sheet.hidden = false; body.innerHTML = '<p class="note">AI가 답변을 읽고 있어요…</p>'; syncExam();
+  sheet.scrollIntoView({ block: 'start' });
+  await settleAnswer();
+  const sample = await pSample;
+  if (ctl.signal.aborted || !here()) return fail('');
+  if (!sample) return fail('AI에 연결하지 못했어요. Claude에 로그인한 상태에서 이 페이지를 다시 열어 주세요.');
+  let text;
+  try {
+    text = (await sample(studyPrompt(E.questions[i], E.answers[i]), { modelTier: 'default', signal: ctl.signal,
+      onText: ({ text }) => { if (here()) body.innerHTML = fbHtml(parseStudy(text), ''); } })).text;
+  } catch (e) { return fail(aiError(e)); }
+  if (ctl.signal.aborted) return fail('');
+  const fb = parseStudy(text); fb.raw = text;
+  E.fb[i] = fb; if (busy === ctl) busy = null; save();
+  if (here()) { body.innerHTML = fbHtml(fb, text); syncExam(); }
+}
+function retryQuestion() {
+  const E = S.exam;
+  stopSpeaking();
+  E.fb[E.idx] = null; E.answers[E.idx] = { text: '', sec: 0, voice: false };
+  save(); render();
+}
+function finishExam(timeUp) { clearInterval(tick); if (busy) { busy.abort(); busy = null; } S.exam.timeUp = !!timeUp; S.phase = 'done'; save(); render(); }
+function startTick() { clearInterval(tick); tick = setInterval(onTick, 500); onTick(); }
+function onTick() {
+  if (S.phase !== 'exam') { clearInterval(tick); return; }
+  const c = $('#clock'), el = $('#elapsed');
+  if (el) el.textContent = mmss(curSec());
+  if (!S.exam.endsAt) return;                 // study mode has no time limit
+  const left = (S.exam.endsAt - Date.now()) / 1000;
+  if (c) { c.textContent = mmss(left); c.classList.toggle('low', left < 300); }
+  if (left <= 0) { clearInterval(tick); settleAnswer().then(() => finishExam(true)); }
+}
+function askQuit() {
+  const study = S.exam.mode === 'study';
+  $('#quitRow').innerHTML = `<span class="note">${study ? '학습을' : '시험을'} 멈출까요?</span>
+    <button type="button" class="btn link" id="quitSubmit">${study ? '여기까지 하고 마치기' : '여기까지만 채점받기'}</button>
+    <button type="button" class="btn link" id="quitDrop">기록 버리고 처음으로</button>
+    <button type="button" class="btn link" id="quitNo">계속 보기</button>`;
+}
+function goHome() { stopSpeaking(); clearInterval(tick); if (busy) busy.abort(); busy = null; S.phase = 'setup'; S.exam = null; S.result = null; save(); render(); }
+
+/* ---------- done + grading ---------- */
+function renderDone() {
+  const E = S.exam, study = E.mode === 'study', answered = E.answers.filter(a => a.text.trim()).length;
+  app.innerHTML = `
+  <header class="mast">
+    <p class="eyebrow mono">${study ? 'Practice' : 'Test'} Completed · ${esc(E.label)}</p>
+    <h1>${study ? '학습을 마쳤어요' : E.timeUp ? '시험 시간이 끝났어요' : '시험이 끝났어요'}</h1>
+    <p class="lede">${E.questions.length}문항 중 ${answered}문항에 답했어요. ${answered ? (study ? '원하면 전체 답변을 모아 예상 등급도 받아볼 수 있어요. ' : '') + '채점은 가장 성능이 높은 모델이 맡아요. 보통 1~2분 걸려요.' : '답변이 하나도 없어서 채점할 내용이 없어요.'}</p>
+  </header>
+  <section class="sheet">
+    <button type="button" class="btn primary big" id="gradeBtn" ${answered ? '' : 'disabled'}>${study ? '전체 채점받기' : 'AI 채점받기'}</button>
+    <p class="status" id="gradeStatus" role="status"></p>
+    <div class="row">${study ? '<button type="button" class="btn link" id="backBtn">문제로 돌아가기</button>' : ''}<button type="button" class="btn link" id="homeBtn">${study ? '처음으로' : '채점 없이 처음으로'}</button></div>
+  </section>`;
+}
+async function grade() {
+  if (busy) { busy.abort(); return; }
+  const btn = $('#gradeBtn'), st = $('#gradeStatus'), t0 = Date.now(), label = btn.textContent;
+  const ctl = busy = new AbortController();
+  btn.textContent = '채점 취소'; st.className = 'status'; st.textContent = 'AI가 답변을 읽고 있어요…';
+  const fail = msg => { if (busy === ctl) busy = null; if (S.phase !== 'done' || !btn.isConnected) return; btn.textContent = label; btn.disabled = CAP.sampleOff; st.className = 'status err'; st.textContent = msg; };
+  const sample = await pSample;
+  if (ctl.signal.aborted) return fail('');
+  if (!sample) return fail('AI에 연결하지 못했어요. Claude에 로그인한 상태에서 이 페이지를 다시 열어 주세요.');
+  let raw;
+  try {
+    raw = await sample.json(gradePrompt(S.exam), { modelTier: 'complex', effort: 'high', cache: false, signal: ctl.signal,
+      onText: ({ text }) => { st.textContent = `채점 결과를 정리하고 있어요… ${Math.round((Date.now() - t0) / 1000)}초 (${text.length}자)`; } });
+  } catch (e) { return fail(aiError(e)); }
+  try { S.result = normResult(raw, S.exam.questions.length); } catch (e) { return fail('채점 결과가 온전히 오지 않았어요. 다시 눌러 주세요.'); }
+  busy = null; S.phase = 'result'; save(); render();
+}
+
+/* ---------- result screen ---------- */
+function renderResult() {
+  const R = S.result, E = S.exam;
+  const qa = E.questions.map((q, i) => {
+    const a = E.answers[i], g = R.questions[i] || { score: 0, feedback: '', fixes: [] }, has = a.text.trim(), f = E.fb && E.fb[i];
+    return `<details class="qa">
+      <summary><span class="mono">Q${pad(q.no)}</span><span class="qt">${esc(q.topicKo)} · ${esc(q.typeKo)}</span><span class="pill ${g.score >= 4 ? 'hi' : g.score < 2 ? 'lo' : ''}">${g.score}/5</span></summary>
+      <div class="qa-body">
+        <p class="qtext" lang="en">${esc(q.text)}</p>
+        <h4>내 답변</h4>
+        <p class="a-en" lang="en">${has ? esc(a.text.trim()) : '(답변 없음)'}</p>
+        <p class="note mono">${esc(q.catKo)} · ${mmss(a.sec)} · ${words(a.text)}단어 · ${a.voice ? '음성' : '입력'}</p>
+        ${g.feedback ? `<h4>피드백</h4><p>${esc(g.feedback)}</p>` : ''}
+        ${g.fixes.length ? `<h4>이렇게 고쳐 보세요</h4>${fixesHtml(g.fixes)}` : ''}
+        ${f && f.better ? `<h4>더 좋은 답변</h4><p class="model" lang="en">${esc(f.better)}</p>`
+          : `<div class="row"><button type="button" class="btn" data-model="${i}">한 단계 위 답변으로 고쳐 보기</button></div>
+        <p class="model" id="model-${i}" lang="en" hidden></p>`}
+      </div>
+    </details>`;
+  }).join('');
+  app.innerHTML = `
+  <header class="mast">
+    <p class="eyebrow mono">Mock Test Result · ${esc(E.label)}</p>
+    <h1>채점 결과</h1>
+  </header>
+  <section class="sheet">
+    <p class="grade-label">예상 등급</p>
+    <p class="grade-big">${esc(R.level)}</p>
+    ${ladderHtml(R.level)}
+    <p>${esc(R.summary)}</p>
+    <p class="note">글로 옮긴 답변만 보고 추정한 참고용 등급이에요. 발음, 억양, 말의 속도감은 평가에 들어가지 않았어요.</p>
+  </section>
+  <section class="sheet">
+    <h2>영역별 점수</h2>
+    <div class="bars">${SCORE_LABELS.map(([k, label]) => `<span>${label}</span><span class="bar"><i style="width:${R.scores[k] * 20}%"></i></span><span class="mono">${R.scores[k].toFixed(1)}</span>`).join('')}</div>
+  </section>
+  ${R.strengths.length ? `<section class="sheet"><h2>잘한 점</h2><ul class="plain">${R.strengths.map(s => `<li>${esc(s)}</li>`).join('')}</ul></section>` : ''}
+  ${R.priorities.length ? `<section class="sheet"><h2>먼저 고칠 점</h2><ol class="plain">${R.priorities.map(s => `<li>${esc(s)}</li>`).join('')}</ol></section>` : ''}
+  <section class="sheet"><h2>문항별 피드백</h2><div>${qa}</div></section>
+  <button type="button" class="btn primary big" id="homeBtn">새 문제로 다시 보기</button>`;
+}
+async function modelAnswer(btn) {
+  const i = Number(btn.dataset.model), out = $('#model-' + i);
+  btn.disabled = true; out.hidden = false; out.textContent = '모범 답안을 쓰는 중이에요…';
+  const sample = await pSample;
+  if (!sample) { out.textContent = 'AI에 연결하지 못했어요.'; btn.disabled = false; return; }
+  try {
+    const r = await sample(modelPrompt(S.exam.questions[i], S.exam.answers[i], S.result.level), { modelTier: 'default', onText: ({ text }) => { out.textContent = text; } });
+    out.textContent = r.text; btn.hidden = true;
+  } catch (e) {
+    out.textContent = (e && e.text ? e.text + '\n\n' : '') + aiError(e);
+    btn.disabled = CAP.sampleOff;
+  }
+}
+
+/* ---------- wiring ---------- */
+function render() {
+  ({ setup: renderSetup, exam: renderExam, done: renderDone, result: renderResult }[S.phase] || renderSetup)();
+  window.scrollTo(0, 0);
+}
+app.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b || b.disabled) return;
+  const d = b.dataset, p = S.prefs;
+  if (d.provider) { CONN.provider = d.provider; saveConn(); return renderSetup(); }
+  if (b.id === 'keyCheck') return void checkKey();
+  if (d.topic) {
+    const on = !p.topics.includes(d.topic);
+    p.topics = on ? p.topics.concat(d.topic) : p.topics.filter(t => t !== d.topic);
+    b.setAttribute('aria-pressed', on); paintSetup(); save(); return;
+  }
+  for (const k of ['level', 'adjust', 'surprise', 'mode']) if (d[k]) {
+    p[k] = k === 'level' ? Number(d[k]) : d[k];
+    b.parentElement.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+    paintSetup(); save(); return;
+  }
+  if (d.model) return void modelAnswer(b);
+  switch (b.id) {
+    case 'startBtn': return void startExam();
+    case 'playBtn': return void playQuestion();
+    case 'textBtn': {
+      const t = $('#qtext');
+      if (t.hidden) revealText(''); else { t.hidden = true; b.setAttribute('aria-expanded', 'false'); b.textContent = '문제 글로 보기'; }
+      return;
+    }
+    case 'micBtn': return micClick();
+    case 'nextBtn': case 'skipBtn': return void go(1);
+    case 'prevBtn': return void go(-1);
+    case 'fbBtn': return void studyFeedback();
+    case 'retryBtn': return retryQuestion();
+    case 'backBtn': if (busy) busy.abort(); busy = null; S.phase = 'exam'; save(); return render();
+    case 'quitBtn': return askQuit();
+    case 'quitNo': $('#quitRow').innerHTML = quitRowHtml(); return syncExam();
+    case 'quitSubmit': return void settleAnswer().then(() => finishExam(false));
+    case 'quitDrop': case 'homeBtn': if (CAP.dict && micState !== 'idle') CAP.dict.stop().catch(() => {}); return goHome();
+    case 'gradeBtn': return void grade();
+  }
+});
+app.addEventListener('change', e => {
+  if (e.target.id === 'status' || e.target.id === 'home') { S.prefs[e.target.id] = e.target.value; save(); }
+  if (e.target.id === 'aiModel') { conn().model = e.target.value; saveConn(); paintCaps(); }
+  if (e.target.id === 'aiGrade') { conn().grade = e.target.value; saveConn(); }
+});
+app.addEventListener('input', e => {
+  if (e.target.id === 'apiKey') { conn().key = e.target.value.trim(); saveConn(); paintCaps(); return; }
+  if (e.target.id !== 'ans' || S.phase !== 'exam') return;
+  beginAnswer(); curA().text = e.target.value; updateWc(); saveSoon();
+  if (S.exam.mode === 'study') syncExam();
+});
+
+function boot(data) { adopt(data && data.prefs ? data : store.get()); render(); }
+const hot = window.claude && window.claude.hot;
+try { if (hot && hot.snapshot) hot.snapshot(() => S); } catch (e) {}
+if (hot && hot.ready) hot.ready(boot); else boot((hot && hot.data) || null);
+})();
+</script>
+</body>
+</html>
