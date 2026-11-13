@@ -413,7 +413,188 @@ function localDictation() {
     onPartial: f => { subs.partial.push(f); }, onFinal: f => { subs.final.push(f); }, onState: f => { subs.state.push(f); }
   };
 }
-const LOCAL = STANDALONE ? { sample: localSample, dictation: localDictation() } : null;
+
+/* ---------- recorded dictation: iPhone browsers and home-screen apps have no usable live recognizer, so record the answer and let the connected AI write it out ---------- */
+const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const REC_RATE = 16000, REC_MAX_SEC = 240;
+const HEAR_PROMPT = 'Transcribe the English speech in this recording word for word. The speaker is a Korean learner answering an English speaking-test question. Write exactly what was said: keep grammar mistakes, wrong word choices, repetitions and self-corrections, and do not fix, summarize, translate or add anything. Leave out filler sounds such as "um" and "uh". Use normal capitalization and punctuation. If there is no intelligible speech, reply with exactly [NO SPEECH]. Reply with the transcript only.';
+function wavBlob(chunks, n, rate) {
+  const buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, n * 2, true);
+  let o = 44;
+  chunks.forEach(c => { for (let i = 0; i < c.length; i++, o += 2) v.setInt16(o, c[i], true); });
+  return new Blob([buf], { type: 'audio/wav' });
+}
+const blobBase64 = blob => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result).split(',')[1] || '');
+  r.onerror = () => rej(apiErr('upstream_error', 'audio read failed'));
+  r.readAsDataURL(blob);
+});
+// transcription has its own model order: a light model first (its own quota, quicker), then the main one
+function hearModels() {
+  const c = conn();
+  if (CONN.provider === 'openai') return ['gpt-transcribe', 'gpt-4o-mini-transcribe', 'whisper-1'];
+  const lite = c.list.find(m => /flash-lite/.test(m) && !/preview|exp/.test(m));
+  return [lite, c.model].filter((m, i, a) => m && a.indexOf(m) === i);
+}
+async function hearWith(model, blob, signal) {
+  const c = conn();
+  let text = '';
+  if (CONN.provider === 'gemini') {
+    const data = await blobBase64(blob);
+    const d = await apiFetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST', signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': c.key },
+      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: HEAR_PROMPT }, { inline_data: { mime_type: 'audio/wav', data } }] }] }) });
+    const cand = d.candidates && d.candidates[0];
+    text = ((cand && cand.content && cand.content.parts) || []).filter(x => !x.thought).map(x => x.text || '').join('');
+  } else {
+    const f = new FormData();
+    f.append('file', blob, 'answer.wav'); f.append('model', model); f.append('language', 'en');
+    if (model !== 'whisper-1') f.append('prompt', 'An English speaking-test answer by a Korean learner. Transcribe exactly as spoken, keeping grammar mistakes.');
+    const d = await apiFetch('https://api.openai.com/v1/audio/transcriptions', { method: 'POST', signal, headers: { Authorization: 'Bearer ' + c.key }, body: f });
+    text = d.text || '';
+  }
+  return text.replace(/\[\s*NO SPEECH\s*\]/gi, ' ').replace(/\s+/g, ' ').trim();
+}
+async function transcribe(blob, signal) {
+  if (!conn().key) throw apiErr('no_key');
+  const models = hearModels();
+  if (!models.length) throw apiErr('no_model');
+  let err = null;
+  for (let round = 0; round < 2; round++) {
+    if (round) await new Promise(r => setTimeout(r, 2500));       // one more pass after a short wait: limits and blips often clear
+    for (const m of models) {
+      if (signal.aborted) throw apiErr('cancelled');
+      try { return await hearWith(m, blob, signal); }
+      catch (e) { err = e; if (e.code === 'cancelled' || e.code === 'bad_key') throw e; if (e.code === 'network') break; }
+    }
+  }
+  throw err;
+}
+function recordDictation() {
+  const AC = window.AudioContext || window.webkitAudioContext, md = navigator.mediaDevices;
+  if (!AC || !md || !md.getUserMedia) return null;
+  const subs = { partial: [], final: [], state: [] };
+  let state = 'idle', stream = null, ctx = null, node = null, src = null, meter = null;
+  let chunks = [], total = 0, outRate = REC_RATE, step = 1, acc = 0, cnt = 0, frac = 0, level = 0, peak = 0, t0 = 0;
+  let kept = null, ctl = null, running = null, dropped = false;
+  const emit = (k, v) => subs[k].forEach(f => f(v));
+  const set = (s, reason, detail) => { state = s; emit('state', { state: s, reason, detail }); };
+  const note = text => emit('partial', { text });
+  const release = () => {
+    clearInterval(meter); meter = null;
+    try { if (node) { node.onaudioprocess = null; if (node.port) node.port.onmessage = null; node.disconnect(); } if (src) src.disconnect(); } catch (e) {}
+    try { if (stream) stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    try { if (ctx) { const p = ctx.close(); if (p && p.catch) p.catch(() => {}); } } catch (e) {}
+    stream = ctx = node = src = null;
+  };
+  const feed = inp => {                       // box-filter the device rate down to 16 kHz, 16-bit mono
+    if (state !== 'listening') return;
+    const out = new Int16Array(Math.ceil(inp.length / step) + 1);
+    let o = 0, sum = 0;
+    for (let i = 0; i < inp.length; i++) {
+      const s = inp[i]; sum += s * s; acc += s; cnt++; frac += 1;
+      if (frac >= step) { frac -= step; const v = Math.max(-1, Math.min(1, acc / cnt)); out[o++] = v < 0 ? v * 0x8000 : v * 0x7FFF; acc = 0; cnt = 0; }
+    }
+    if (o) { chunks.push(out.subarray(0, o)); total += o; }
+    level = Math.sqrt(sum / Math.max(1, inp.length)); if (level > peak) peak = level;
+  };
+  const tap = async () => {
+    if (ctx.createScriptProcessor) {
+      node = ctx.createScriptProcessor(ctx.sampleRate >= 32000 ? 4096 : ctx.sampleRate >= 16000 ? 1024 : 512, 1, 1);   // about 0.06-0.09 s a block, so stopping cuts off almost nothing
+      node.onaudioprocess = e => feed(e.inputBuffer.getChannelData(0));
+      src.connect(node); node.connect(ctx.destination);         // must reach the destination to run; it writes no sound
+      return;
+    }
+    const url = URL.createObjectURL(new Blob(['registerProcessor("tap",class extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];if(c)this.port.postMessage(c.slice(0));return true}})'], { type: 'application/javascript' }));
+    try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+    node = new AudioWorkletNode(ctx, 'tap', { numberOfInputs: 1, numberOfOutputs: 0 });
+    node.port.onmessage = e => feed(e.data);
+    src.connect(node);
+  };
+  const onMeter = () => {
+    const sec = (Date.now() - t0) / 1000, bars = Math.min(5, Math.ceil(level * 40));
+    if (sec > 1.5 && !total && ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
+    note(sec > 3 && peak < 0.004 ? `녹음 중 ${mmss(sec)} · 소리가 안 들어오고 있어요` : `녹음 중 ${mmss(sec)} ${'▮'.repeat(bars)}${'▯'.repeat(5 - bars)}`);
+    if (sec >= REC_MAX_SEC) finish('too_long');
+  };
+  const run = (blob, why) => {
+    kept = null; dropped = false;
+    set('finishing'); note('답변을 글로 옮기고 있어요…');
+    const c = ctl = new AbortController(), timer = setTimeout(() => c.abort(), 75000);
+    running = (async () => {
+      let text = '', err = null;
+      try { text = await transcribe(blob, c.signal); } catch (e) { err = e; }
+      clearTimeout(timer); ctl = null; running = null; note('');
+      if (dropped) { set('idle', 'stopped'); return {}; }
+      if (err) { kept = blob; set('idle', 'failed', aiError(err) || '시간이 너무 오래 걸려서 멈췄어요.'); return { failed: true }; }
+      if (!text) { set('idle', 'silent'); return {}; }
+      emit('final', { text: ' ' + text });
+      set('idle', why === 'too_long' || why === 'hidden' ? why : 'stopped');
+      return {};
+    })();
+    return running;
+  };
+  const finish = why => {
+    if (state !== 'listening') return running || Promise.resolve({});
+    const n = total, rate = outRate, sec = n / rate, heard = peak >= 0.004;
+    const blob = n ? wavBlob(chunks, n, rate) : null;
+    chunks = []; total = 0; release(); note('');
+    if (!n) { set('idle', 'no_audio'); return Promise.resolve({}); }
+    if (sec < 0.4) { set('idle', 'stopped'); return Promise.resolve({}); }
+    if (!heard) { set('idle', 'silent'); return Promise.resolve({}); }
+    return run(blob, why);
+  };
+  document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'listening') finish('hidden'); });
+  return {
+    kind: 'record',
+    active: () => state !== 'idle',
+    pending: () => !!kept,
+    discard: () => { kept = null; },
+    retry: () => (state === 'idle' && kept ? run(kept, 'stopped') : (running || Promise.resolve({}))),
+    start: async () => {
+      if (state !== 'idle') return;
+      kept = null; set('starting');
+      let s;
+      try { s = await md.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
+      catch (e) {
+        if (state !== 'starting') return;
+        const denied = !!e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
+        set('idle', denied ? 'not_granted' : 'upstream_error');
+        throw { code: denied ? 'not_granted' : 'upstream_error', message: String(e) };
+      }
+      if (state !== 'starting') { s.getTracks().forEach(t => t.stop()); return; }   // left while the permission prompt was open
+      try {
+        stream = s; ctx = new AC();                                 // created once capture is live, so it takes the capture sample rate
+        outRate = Math.min(REC_RATE, ctx.sampleRate); step = ctx.sampleRate / outRate;
+        chunks = []; total = 0; acc = cnt = frac = level = peak = 0;
+        src = ctx.createMediaStreamSource(stream);
+        await tap();
+        if (ctx.state !== 'running') ctx.resume().catch(() => {});
+      } catch (e) { release(); set('idle', 'upstream_error'); throw { code: 'upstream_error', message: String(e) }; }
+      t0 = Date.now(); set('listening');
+      meter = setInterval(onMeter, 250); onMeter();
+    },
+    stop: () => {
+      if (state === 'starting') { release(); set('idle', 'stopped'); return Promise.resolve({}); }
+      return finish('stopped');
+    },
+    cancel: () => {                                                  // leave without transcribing
+      kept = null; dropped = true;
+      if (ctl) ctl.abort();
+      if (state === 'listening' || state === 'starting') { chunks = []; total = 0; release(); note(''); set('idle', 'stopped'); }
+    },
+    onPartial: f => { subs.partial.push(f); }, onFinal: f => { subs.final.push(f); }, onState: f => { subs.state.push(f); }
+  };
+}
+function pickDictation() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  return (SR && !IOS) ? localDictation() : (recordDictation() || localDictation());
+}
+const LOCAL = STANDALONE ? { sample: localSample, dictation: pickDictation() } : null;
 
 /* ---------- capabilities: Claude's inside Claude, the local ones above elsewhere (all optional; the page works without voice) ---------- */
 const CAP = { sample: null, dict: null, tts: null, ready: { sample: false, dict: false, tts: false }, sampleOff: false, dictOff: false, ttsOff: false, synthOff: false };
@@ -639,7 +820,7 @@ function connHtml() {
       <label class="field" for="aiGrade"><span>채점 모델</span><select id="aiGrade">${opts(c.grade, '위와 같은 모델')}</select></label>
     </div>
     <p class="status" id="aiStatus" role="status">${c.list.length ? `연결됐어요. 고를 수 있는 모델이 ${c.list.length}개예요.` : '키를 넣고 연결 확인을 누르면 쓸 수 있는 모델을 불러와요.'}</p>
-    <p class="note">키는 ${CONN.provider === 'gemini' ? 'Google AI Studio(aistudio.google.com)' : 'OpenAI 플랫폼(platform.openai.com)'}에서 발급받아요. 이 브라우저에만 저장되고 고른 서비스로만 보내며, 출제와 채점은 그 서비스의 요금과 한도를 따라요.</p>
+    <p class="note">키는 ${CONN.provider === 'gemini' ? 'Google AI Studio(aistudio.google.com)' : 'OpenAI 플랫폼(platform.openai.com)'}에서 발급받아요. 이 브라우저에만 저장되고 고른 서비스로만 보내며, 출제와 채점은 그 서비스의 요금과 한도를 따라요.${LOCAL.dictation && LOCAL.dictation.kind === 'record' ? ' 이 기기에서는 말하기 버튼으로 녹음한 음성도 글로 옮기려고 그 서비스로 보내고, 답변 하나에 요청을 한 번 써요.' : ''}</p>
   </section>`;
 }
 async function checkKey() {
@@ -666,7 +847,7 @@ function paintCaps() {
   const lc = STANDALONE ? conn() : null;
   const ai = lc ? (lc.key && lc.model ? `${PROVIDERS[CONN.provider]} · ${esc(lc.model)}` : 'API 키가 필요해요 (아래 AI 연결)')
     : !CAP.ready.sample ? '확인 중' : (CAP.sample && !CAP.sampleOff) ? '연결됨' : '연결 안 됨 (Claude에 로그인한 상태로 이 페이지를 열어야 해요)';
-  const mic = !CAP.ready.dict ? '확인 중' : (CAP.dict && !CAP.dictOff) ? '말하면 글로 받아써요' : '이 환경에서는 직접 입력하거나 키보드의 마이크 버튼을 써요';
+  const mic = !CAP.ready.dict ? '확인 중' : (CAP.dict && !CAP.dictOff) ? (CAP.dict.kind === 'record' ? '말하기 버튼으로 녹음하면 AI가 글로 옮겨요' : '말하면 글로 받아써요') : '이 환경에서는 직접 입력하거나 영어 키보드의 마이크 버튼을 써요';
   const m = audioMode();
   const snd = m === 'pending' ? '확인 중' : m === 'claude' ? 'Claude 음성으로 읽어줘요' : m === 'browser' ? '기기 음성으로 읽어줘요' : '글로 보여줘요';
   el.innerHTML = `<li><b>AI 출제·채점</b> ${ai}</li><li><b>답변 입력</b> ${mic}</li><li><b>문제 듣기</b> ${snd}</li>`;
@@ -731,7 +912,7 @@ function renderExam() {
     <div class="answer-head"><label for="ans">내 답변</label><span class="meta"><span id="elapsed">0:00</span> · <span id="wc">0</span>단어</span></div>
     <textarea id="ans" lang="en" spellcheck="false" autocapitalize="sentences" placeholder="영어로 답하면 여기에 글로 쌓여요. 직접 입력해도 돼요.">${esc(a.text)}</textarea>
     <p class="partial" id="partial" lang="en" aria-live="polite"></p>
-    <div class="row"><button type="button" class="mic" id="micBtn" hidden><i class="dot"></i><span></span></button></div>
+    <div class="row"><button type="button" class="mic" id="micBtn" hidden><i class="dot"></i><span></span></button><button type="button" class="btn link" id="dropRec" hidden>녹음 버리고 새로 말하기</button></div>
     <p class="note" id="micHint"></p>
   </section>
   ${study ? `<section class="sheet" id="fbSheet" hidden>
@@ -763,10 +944,14 @@ function syncExam() {
   micBtn.hidden = !canDict;
   micBtn.classList.toggle('on', listening);
   micBtn.disabled = moving;
-  micBtn.querySelector('span').textContent = listening ? '말하기 멈춤' : moving ? '준비 중…' : curA().text ? '이어서 말하기' : '말하기 시작';
-  if (!hint.dataset.msg) hint.textContent = canDict ? '버튼을 누르고 영어로 답하세요. 받아쓴 글은 직접 고칠 수 있어요.'
+  const rec = canDict && CAP.dict.kind === 'record', pending = rec && CAP.dict.pending();
+  micBtn.querySelector('span').textContent = listening ? (rec ? '말하기 끝내기' : '말하기 멈춤') : (rec && micState === 'finishing') ? '글로 옮기는 중…' : moving ? '준비 중…'
+    : pending ? '녹음한 답변 다시 옮기기' : curA().text ? '이어서 말하기' : '말하기 시작';
+  $('#dropRec').hidden = !pending || listening || moving;
+  if (!hint.dataset.msg) hint.textContent = rec ? '버튼을 누르고 영어로 답한 뒤 한 번 더 누르면 AI가 글로 옮겨요. 옮긴 글은 직접 고칠 수 있어요.'
+    : canDict ? '버튼을 누르고 영어로 답하세요. 받아쓴 글은 직접 고칠 수 있어요.'
     : !CAP.ready.dict ? '음성 받아쓰기를 쓸 수 있는지 확인하고 있어요.'
-    : '이 환경에서는 받아쓰기 버튼을 쓸 수 없어요. 답변 칸을 누른 뒤 키보드의 마이크 버튼으로 말하면 글로 입력돼요.';
+    : '이 환경에서는 말하기 버튼을 쓸 수 없어요. 마이크 권한을 막았다면 허용한 뒤 새로 고쳐 주세요. 키보드의 마이크 버튼을 쓸 때는 키보드를 영어(English)로 바꾼 다음 눌러야 영어로 받아써요.';
   const nextBtn = $('#nextBtn');
   if (!study) { nextBtn.textContent = last ? '시험 끝내기' : '다음 문제'; return; }
   const has = !!E.fb[E.idx], fbBtn = $('#fbBtn'), prev = $('#prevBtn'), skip = $('#skipBtn');
@@ -848,19 +1033,30 @@ function wireDictation(d) {
     const ta = $('#ans'); if (ta) { ta.value = a.text; ta.scrollTop = ta.scrollHeight; }
     updateWc(); saveSoon();
   });
-  d.onState(({ state, reason }) => {
+  d.onState(({ state, reason, detail }) => {
     micState = state;
     if (state === 'idle') {
       const p = $('#partial'); if (p) p.textContent = '';
       if (reason === 'not_granted' || reason === 'unavailable') CAP.dictOff = true;
       if (reason === 'hidden') setHint('화면을 벗어나서 받아쓰기가 멈췄어요. 버튼을 눌러 이어서 말하세요.');
+      if (reason === 'failed') setHint((detail || '답변을 글로 옮기지 못했어요.') + ' 녹음은 남아 있으니 버튼을 눌러 다시 옮겨 보세요.');
+      if (reason === 'silent') setHint('말소리를 알아듣지 못했어요. 휴대폰을 입 가까이에 두고 다시 말해 주세요.');
+      if (reason === 'no_audio') setHint('마이크에서 소리를 받지 못했어요. 페이지를 새로 고친 뒤 다시 눌러 주세요. 계속 안 되면 키보드를 영어로 바꾸고 키보드의 마이크 버튼을 써 보세요.');
+      if (reason === 'too_long') setHint('한 번에 4분까지 녹음돼요. 여기까지 글로 옮겼으니 이어서 말하려면 다시 눌러 주세요.');
     }
     syncExam();
   });
 }
+function dropRecording() {
+  const d = CAP.dict; if (!d || !d.discard) return;
+  d.discard(); const h = $('#micHint'); if (h) delete h.dataset.msg;
+  syncExam();
+}
 function micClick() {
   const d = CAP.dict; if (!d) return;
   if (d.active()) { d.stop().catch(() => {}); return; }
+  const h = $('#micHint'); if (h) delete h.dataset.msg;
+  if (d.pending && d.pending()) { beginAnswer(); d.retry(); return; }
   stopSpeaking(); beginAnswer();
   d.start({ language: 'en' }).catch(e => {
     const c = e && e.code;
@@ -871,18 +1067,25 @@ function micClick() {
 }
 async function settleAnswer() {
   stopSpeaking();
-  if (CAP.dict && micState !== 'idle') { try { await CAP.dict.stop(); } catch (e) {} }
+  let ok = true;
+  if (CAP.dict && micState !== 'idle') { try { const r = await CAP.dict.stop(); if (r && r.failed) ok = false; } catch (e) {} }
+  if (S.phase !== 'exam') return ok;
   const a = curA(), ta = $('#ans');
   if (ta) a.text = ta.value;
   a.sec = curSec(); tStart = null;
+  return ok;
 }
+const KEPT_MSG = '답변을 글로 옮기지 못해서 넘어가지 않았어요. 버튼으로 다시 옮겨 보세요. 그대로 넘어가려면 한 번 더 누르면 돼요.';
+const dropKept = () => { if (CAP.dict && CAP.dict.discard) CAP.dict.discard(); };
 let navLock = false;
 async function go(delta) {
   if (navLock) return;
   navLock = true;
   if (busy) busy.abort();
   try {
-    await settleAnswer();
+    if (!(await settleAnswer())) { setHint(KEPT_MSG); syncExam(); return; }
+    if (S.phase !== 'exam') return;
+    dropKept();
     const E = S.exam, n = E.idx + delta;
     if (n >= E.questions.length) finishExam(false);
     else { E.idx = Math.max(0, n); save(); render(); }
@@ -953,7 +1156,7 @@ async function studyFeedback() {
   };
   sheet.hidden = false; body.innerHTML = '<p class="note">AI가 답변을 읽고 있어요…</p>'; syncExam();
   sheet.scrollIntoView({ block: 'start' });
-  await settleAnswer();
+  if (!(await settleAnswer())) return fail('');
   const sample = await pSample;
   if (ctl.signal.aborted || !here()) return fail('');
   if (!sample) return fail('AI에 연결하지 못했어요. Claude에 로그인한 상태에서 이 페이지를 다시 열어 주세요.');
@@ -969,11 +1172,11 @@ async function studyFeedback() {
 }
 function retryQuestion() {
   const E = S.exam;
-  stopSpeaking();
+  stopSpeaking(); dropKept();
   E.fb[E.idx] = null; E.answers[E.idx] = { text: '', sec: 0, voice: false };
   save(); render();
 }
-function finishExam(timeUp) { clearInterval(tick); if (busy) { busy.abort(); busy = null; } S.exam.timeUp = !!timeUp; S.phase = 'done'; save(); render(); }
+function finishExam(timeUp) { dropKept(); clearInterval(tick); if (busy) { busy.abort(); busy = null; } S.exam.timeUp = !!timeUp; S.phase = 'done'; save(); render(); }
 function startTick() { clearInterval(tick); tick = setInterval(onTick, 500); onTick(); }
 function onTick() {
   if (S.phase !== 'exam') { clearInterval(tick); return; }
@@ -982,7 +1185,7 @@ function onTick() {
   if (!S.exam.endsAt) return;                 // study mode has no time limit
   const left = (S.exam.endsAt - Date.now()) / 1000;
   if (c) { c.textContent = mmss(left); c.classList.toggle('low', left < 300); }
-  if (left <= 0) { clearInterval(tick); settleAnswer().then(() => finishExam(true)); }
+  if (left <= 0) { clearInterval(tick); settleAnswer().then(() => { if (S.phase === 'exam') finishExam(true); }); }
 }
 function askQuit() {
   const study = S.exam.mode === 'study';
@@ -1111,6 +1314,7 @@ app.addEventListener('click', e => {
       return;
     }
     case 'micBtn': return micClick();
+    case 'dropRec': return dropRecording();
     case 'nextBtn': case 'skipBtn': return void go(1);
     case 'prevBtn': return void go(-1);
     case 'fbBtn': return void studyFeedback();
@@ -1118,8 +1322,10 @@ app.addEventListener('click', e => {
     case 'backBtn': if (busy) busy.abort(); busy = null; S.phase = 'exam'; save(); return render();
     case 'quitBtn': return askQuit();
     case 'quitNo': $('#quitRow').innerHTML = quitRowHtml(); return syncExam();
-    case 'quitSubmit': return void settleAnswer().then(() => finishExam(false));
-    case 'quitDrop': case 'homeBtn': if (CAP.dict && micState !== 'idle') CAP.dict.stop().catch(() => {}); return goHome();
+    case 'quitSubmit': return void settleAnswer().then(ok => { if (S.phase !== 'exam') return; if (ok) finishExam(false); else { setHint(KEPT_MSG); syncExam(); } });
+    case 'quitDrop': case 'homeBtn':
+      if (CAP.dict && CAP.dict.cancel) CAP.dict.cancel(); else if (CAP.dict && micState !== 'idle') CAP.dict.stop().catch(() => {});
+      return goHome();
     case 'gradeBtn': return void grade();
   }
 });
