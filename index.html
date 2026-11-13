@@ -166,7 +166,8 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pad = n => String(n).padStart(2, '0');
 const mmss = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':' + pad(s % 60); };
-const words = t => (String(t).trim().match(/\S+/g) || []).length;
+const FILLER = /^["'(\[]*(?:u+h+m*|u+m+|e+r+m*|h+m+|m{2,}|a+h+|으*음+|어+|아+|그+)[.,!?…~"')\]-]*$/i;      // um, uh, hmm, 음, 어, 아 ...
+const words = t => (String(t).trim().match(/\S+/g) || []).filter(w => !FILLER.test(w)).length;
 const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
 const pick = a => a[Math.floor(Math.random() * a.length)];
 const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
@@ -416,8 +417,8 @@ function localDictation() {
 
 /* ---------- recorded dictation: iPhone browsers and home-screen apps have no usable live recognizer, so record the answer and let the connected AI write it out ---------- */
 const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-const REC_RATE = 16000, REC_MAX_SEC = 240;
-const HEAR_PROMPT = 'Transcribe the English speech in this recording. The speaker is a Korean learner answering an English speaking-test question, so expect a Korean accent: where a sound is ambiguous (r/l, f/p, v/b, th/s, long and short vowels), write the word that fits the sentence. Otherwise keep the speaker\'s own wording: keep grammar mistakes, wrong word choices, repetitions and self-corrections, and do not fix, summarize, translate or add anything. Leave out filler sounds such as "um" and "uh". Write anything said in Korean in Korean. Use normal capitalization and punctuation. If there is no intelligible speech, reply with exactly [NO SPEECH]. Reply with the transcript only.';
+const REC_RATE = 16000, REC_MAX_SEC = 240, QUIET = 0.002;   // QUIET: below this level nothing was said (unprocessed microphone sound is low)
+const HEAR_PROMPT = 'Transcribe the English speech in this recording, every word of it. The speaker is a Korean learner answering an English speaking-test question, so expect a Korean accent and stretches of fast or slurred speech. Never leave a word out because it was fast or unclear: write the closest word you can hear, and where a sound is ambiguous (r/l, f/p, v/b, th/s, long and short vowels) write the word that fits the sentence. Otherwise keep the speaker\'s own wording: keep grammar mistakes, wrong word choices, repetitions, false starts and self-corrections, and do not fix, summarize, translate or add anything. Keep hesitation sounds where they occur: write English-sounding ones as "um", "uh" or "hmm", and Korean ones (음, 어, 아, 그) in Korean. Write anything else said in Korean in Korean. Use normal capitalization and punctuation. If there is no intelligible speech, reply with exactly [NO SPEECH]. Reply with the transcript only.';
 const hearPrompt = q => HEAR_PROMPT + (q ? `\nFor context only, the question being answered is: "${q}" Use it just to decide between words that sound alike; never add or complete anything that was not spoken.` : '');
 function wavBlob(chunks, n, rate, gain) {
   const buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
@@ -477,7 +478,7 @@ async function hearWith(model, blob, signal, about) {
   } else {
     const f = new FormData();
     f.append('file', blob, 'answer.wav'); f.append('model', model); f.append('language', 'en');
-    if (model !== 'whisper-1') f.append('prompt', 'An English speaking-test answer by a Korean learner with a Korean accent. Transcribe as spoken, keeping grammar mistakes.' + (about ? ' The question was: ' + about : ''));
+    if (model !== 'whisper-1') f.append('prompt', 'Um, uh, hmm... An English speaking-test answer by a Korean learner with a Korean accent, sometimes fast. Transcribe every word as spoken, keeping hesitation sounds like um and uh, false starts and grammar mistakes.' + (about ? ' The question was: ' + about : ''));
     const d = await apiFetch('https://api.openai.com/v1/audio/transcriptions', { method: 'POST', signal, headers: { Authorization: 'Bearer ' + c.key }, body: f });
     text = d.text || '';
   }
@@ -503,7 +504,7 @@ function recordDictation() {
   if (!AC || !md || !md.getUserMedia) return null;
   const subs = { partial: [], final: [], state: [] };
   let state = 'idle', stream = null, ctx = null, node = null, src = null, meter = null;
-  let chunks = [], total = 0, outRate = REC_RATE, resample = null, levels = [], top = 0, level = 0, peak = 0, t0 = 0, about = '';
+  let chunks = [], total = 0, outRate = REC_RATE, resample = null, levels = [], top = 0, level = 0, hold = 0, peak = 0, t0 = 0, about = '';
   let kept = null, ctl = null, running = null, dropped = false;
   const emit = (k, v) => subs[k].forEach(f => f(v));
   const set = (s, reason, detail) => { state = s; emit('state', { state: s, reason, detail }); };
@@ -519,7 +520,7 @@ function recordDictation() {
     if (state !== 'listening') return;
     let sum = 0;
     for (let i = 0; i < inp.length; i++) sum += inp[i] * inp[i];
-    level = Math.sqrt(sum / Math.max(1, inp.length)); if (level > peak) peak = level;
+    level = Math.sqrt(sum / Math.max(1, inp.length)); if (level > peak) peak = level; if (level > hold) hold = level;
     levels.push(level);
     const r = resample(inp), out = new Int16Array(r.length);
     for (let i = 0; i < r.length; i++) { const v = Math.max(-1, Math.min(1, r[i])), m = v < 0 ? -v : v; if (m > top) top = m; out[i] = v < 0 ? v * 0x8000 : v * 0x7FFF; }
@@ -530,7 +531,7 @@ function recordDictation() {
     let sum = 0;
     for (let i = 0; i < n; i++) sum += l[i];
     const loud = sum / n;                     // the loudest fifth of the take is roughly the speech itself
-    return loud > 0 ? Math.max(1, Math.min(12, 0.1 / loud, 1.4 / Math.max(top, 1e-4))) : 1;
+    return loud > 0 ? Math.max(1, Math.min(12, 0.08 / loud, 0.9 / Math.max(top, 1e-4))) : 1;   // one fixed gain for the whole take, never clipping
   };
   const tap = async () => {
     if (ctx.createScriptProcessor) {
@@ -546,9 +547,10 @@ function recordDictation() {
     src.connect(node);
   };
   const onMeter = () => {
-    const sec = (Date.now() - t0) / 1000, bars = Math.min(5, Math.ceil(level * 40));
+    const sec = (Date.now() - t0) / 1000, bars = hold > 0 ? Math.max(0, Math.min(5, Math.round((20 * Math.log10(hold) + 60) / 9))) : 0;   // loudest block since the last tick, on a dB scale
+    hold = 0;
     if (sec > 1.5 && !total && ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
-    note(sec > 3 && peak < 0.004 ? `녹음 중 ${mmss(sec)} · 소리가 안 들어오고 있어요` : `녹음 중 ${mmss(sec)} ${'▮'.repeat(bars)}${'▯'.repeat(5 - bars)}`);
+    note(sec > 3 && peak < QUIET ? `녹음 중 ${mmss(sec)} · 소리가 안 들어오고 있어요` : `녹음 중 ${mmss(sec)} ${'▮'.repeat(bars)}${'▯'.repeat(5 - bars)}`);
     if (sec >= REC_MAX_SEC) finish('too_long');
   };
   const run = (blob, why) => {
@@ -570,7 +572,7 @@ function recordDictation() {
   };
   const finish = why => {
     if (state !== 'listening') return running || Promise.resolve({});
-    const n = total, rate = outRate, sec = n / rate, heard = peak >= 0.004;
+    const n = total, rate = outRate, sec = n / rate, heard = peak >= QUIET;
     const blob = n ? wavBlob(chunks, n, rate, gainFor()) : null;
     chunks = []; levels = []; total = 0; release(); note('');
     if (!n) { set('idle', 'no_audio'); return Promise.resolve({}); }
@@ -589,7 +591,7 @@ function recordDictation() {
       if (state !== 'idle') return;
       kept = null; about = String((opts && opts.context) || '').slice(0, 600); set('starting');
       let s;
-      try { s = await md.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
+      try { s = await md.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }); }   // unprocessed sound: call-style clean-up eats quick word onsets
       catch (e) {
         if (state !== 'starting') return;
         const denied = !!e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
@@ -600,7 +602,7 @@ function recordDictation() {
       try {
         stream = s; ctx = new AC();                                 // created once capture is live, so it takes the capture sample rate
         outRate = Math.min(REC_RATE, ctx.sampleRate); resample = makeResampler(ctx.sampleRate, outRate);
-        chunks = []; levels = []; total = 0; top = level = peak = 0;
+        chunks = []; levels = []; total = 0; top = level = hold = peak = 0;
         src = ctx.createMediaStreamSource(stream);
         await tap();
         if (ctx.state !== 'running') ctx.resume().catch(() => {});
@@ -730,7 +732,7 @@ function gradePrompt(E) {
     'You are an experienced, strict but fair OPIc rater who follows the ACTFL proficiency guidelines. Rate this English OPIc mock test taken by a Korean learner.',
     'Scale, low to high: NL, NM, NH, IL, IM1, IM2, IM3, IH, AL.',
     'Anchors: NL/NM = isolated words and memorized phrases. NH = short memorized sentences that break down beyond them. IL = simple sentences on familiar topics, mostly present tense. IM1-IM3 = strings of connected sentences on familiar topics, can ask questions and handle a simple transaction; IM3 is consistent, begins to form paragraphs and uses the past tense with errors. IH = mostly paragraph-length narration and description across past, present and future and can deal with a complication, but with noticeable breakdowns. AL = sustained, organized paragraphs in all time frames, complications handled confidently, comparison and opinion questions answered with support.',
-    'You only have transcripts (typed, or produced by speech-to-text). Do not judge pronunciation, intonation or accent. Ignore capitalization, punctuation and obvious speech-recognition slips. Judge whether each task was actually completed, text type (words, sentences or connected paragraphs), control of time frames, grammar accuracy, vocabulary range, detail and organization, and how the role-play complication was handled. An empty answer is no response and counts against the rating. Answers much shorter than a real spoken answer limit the level. Do not inflate: rate what is on the page.',
+    'You only have transcripts (typed, or produced by speech-to-text). Do not judge pronunciation, intonation or accent. Ignore capitalization, punctuation and obvious speech-recognition slips. Hesitation sounds in spoken answers (um, uh, hmm, 음, 어, 아) are written out as heard: they are neither content nor errors, though frequent hesitation shows lower fluency. Judge whether each task was actually completed, text type (words, sentences or connected paragraphs), control of time frames, grammar accuracy, vocabulary range, detail and organization, and how the role-play complication was handled. An empty answer is no response and counts against the rating. Answers much shorter than a real spoken answer limit the level. Do not inflate: rate what is on the page.',
     `Self-assessment difficulty chosen: ${E.label}. "seconds" is the time spent on the question, thinking included.`,
     '',
     'Test data (JSON):',
@@ -1132,7 +1134,7 @@ function studyPrompt(q, a) {
     `Question (${q.catKo}; topic: ${q.topicEn}; type: ${q.typeKo}; difficulty level ${q.level} of 6): ${q.text}`,
     `Learner answer (${a.voice ? 'speech-to-text' : 'typed'}, ${words(t)} words, ${Math.round(a.sec)} seconds including thinking): ${t || '(no answer)'}`,
     '',
-    'You only have the transcript: do not judge pronunciation or intonation, and ignore capitalization, punctuation and obvious speech-recognition slips. Be honest and specific; do not inflate.',
+    'You only have the transcript: do not judge pronunciation or intonation, and ignore capitalization, punctuation and obvious speech-recognition slips. Hesitation sounds (um, uh, hmm, 음, 어, 아) are written out as heard: never treat them as errors or put them in FIX lines, leave them out of BETTER, and mention them in FEEDBACK only if they are frequent. Be honest and specific; do not inflate.',
     'Reply in plain text with no markdown, using exactly these line prefixes, one item per line, in this order:',
     'SCORE: 0 to 5 in steps of 0.5 for this one answer (task completion, sentence-to-paragraph structure, grammar, vocabulary, detail)',
     'LEVEL: the single OPIc level this answer sounds like: NL, NM, NH, IL, IM1, IM2, IM3, IH or AL',
