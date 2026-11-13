@@ -279,6 +279,8 @@ let micState = 'idle';
 let tStart = null;          // when the current answer started
 let tick = null;
 let speakToken = 0;
+let lastUtter = null;
+let speakNote = null;        // { idx, text }: why the last playback of this question made no sound
 let saveTimer = null;
 const save = () => store.set(S);
 const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(save, 600); };
@@ -1008,7 +1010,7 @@ function syncExam() {
   const study = E.mode === 'study', last = E.idx === E.questions.length - 1;
   playBtn.textContent = speaking ? '듣는 중…' : plays === 0 ? '문제 듣기' : study ? '다시 듣기' : plays === 1 ? '다시 듣기 (1회 남음)' : '두 번 모두 들었어요';
   playBtn.disabled = speaking || (!study && plays >= 2) || listening || moving;
-  if (!speaking) state.textContent = mode === 'none' ? '이 환경에서는 문제를 글로 보여드려요' : plays === 0 ? '버튼을 누르면 문제를 읽어드려요' : '이제 답변해 주세요';
+  if (!speaking) state.textContent = (speakNote && speakNote.idx === E.idx) ? speakNote.text : mode === 'none' ? '이 환경에서는 문제를 글로 보여드려요' : plays === 0 ? '버튼을 누르면 문제를 읽어드려요' : '이제 답변해 주세요';
   const canDict = !!CAP.dict && !CAP.dictOff;
   micBtn.hidden = !canDict;
   micBtn.classList.toggle('on', listening);
@@ -1045,7 +1047,7 @@ function revealText(note) {
   if (note) $('#avaState').textContent = note;
   beginAnswer();
 }
-function setSpeaking(on) { const w = $('#wave'); if (w) { w.classList.toggle('on', on); if (on) $('#avaState').textContent = 'Ava가 문제를 읽고 있어요'; } syncExam(); }
+function setSpeaking(on) { const w = $('#wave'); if (w) { w.classList.toggle('on', on); if (on) $('#avaState').textContent = 'Ava가 문제를 읽고 있어요' + (IOS && audioMode() === 'browser' ? ' · 소리가 안 들리면 무음 모드를 끄고 음량을 올려 주세요' : ''); } syncExam(); }
 
 function stopSpeaking() {
   speakToken++;
@@ -1060,13 +1062,18 @@ async function playQuestion() {
   if (mode === 'pending') { $('#avaState').textContent = '음성을 준비하고 있어요…'; await pTts; if (S.phase !== 'exam' || S.exam.idx !== idx) return; mode = audioMode(); }
   if (mode === 'none') return revealText('음성을 쓸 수 없어서 문제를 글로 보여드려요.');
   const text = E.questions[idx].text, token = ++speakToken;
+  speakNote = null;
   E.plays[idx]++; save(); setSpeaking(true);
   let settled = false;
   const done = ok => {
     if (settled) return; settled = true;
     if (token !== speakToken || S.phase !== 'exam') return;
     setSpeaking(false);
-    if (ok) beginAnswer(); else revealText('음성 재생이 안 돼서 문제를 글로 보여드려요.');
+    if (ok) return beginAnswer();
+    E.plays[idx] = Math.max(0, E.plays[idx] - 1); save();            // nothing was heard: do not count it as a listen
+    speakNote = { idx, text: audioMode() === 'none' ? '음성 재생이 안 돼서 문제를 글로 보여드려요.' : '소리를 내지 못해서 문제를 글로 보여드려요. 버튼을 누르면 다시 읽어 봐요.' };
+    revealText(speakNote.text);
+    syncExam();
   };
   if (mode === 'claude') {
     CAP.tts.speak(text, { language: 'en' }).then(() => done(true), e => {
@@ -1084,11 +1091,20 @@ async function playQuestion() {
     if (v) u.voice = v;
     u.lang = 'en-US'; u.rate = 0.95;
     let started = false;
+    const giveUp = () => { if (started || settled) return; try { speechSynthesis.cancel(); } catch (e) {} done(false); };
     u.onstart = () => { started = true; };
     u.onend = () => done(true);
     u.onerror = () => done(false);
-    speechSynthesis.cancel(); speechSynthesis.speak(u);
-    setTimeout(() => { if (!started && !settled) { try { speechSynthesis.cancel(); } catch (e) {} CAP.synthOff = true; done(false); } }, 4000);
+    lastUtter = u;                                  // keep a reference: some browsers drop a speaking utterance otherwise and never report its end
+    speechSynthesis.cancel();
+    try { speechSynthesis.resume(); } catch (e) {}  // clears a voice left paused by an earlier interruption (call, app switch)
+    speechSynthesis.speak(u);
+    setTimeout(() => {
+      if (started || settled) return;
+      if (speechSynthesis.speaking || speechSynthesis.pending) setTimeout(() => { if (!speechSynthesis.speaking) giveUp(); }, 5000);   // still loading the voice: wait a little longer
+      else giveUp();
+    }, 4000);
+    setTimeout(() => done(true), 20000 + text.length * 120);    // never leave the screen stuck on "listening" if no end is reported
   } catch (e) { CAP.synthOff = true; done(false); }
 }
 
@@ -1245,7 +1261,7 @@ function retryQuestion() {
   E.fb[E.idx] = null; E.answers[E.idx] = { text: '', sec: 0, voice: false };
   save(); render();
 }
-function finishExam(timeUp) { dropKept(); clearInterval(tick); if (busy) { busy.abort(); busy = null; } S.exam.timeUp = !!timeUp; S.phase = 'done'; save(); render(); }
+function finishExam(timeUp) { dropKept(); speakNote = null; clearInterval(tick); if (busy) { busy.abort(); busy = null; } S.exam.timeUp = !!timeUp; S.phase = 'done'; save(); render(); }
 function startTick() { clearInterval(tick); tick = setInterval(onTick, 500); onTick(); }
 function onTick() {
   if (S.phase !== 'exam') { clearInterval(tick); return; }
@@ -1263,7 +1279,7 @@ function askQuit() {
     <button type="button" class="btn link" id="quitDrop">기록 버리고 처음으로</button>
     <button type="button" class="btn link" id="quitNo">계속 보기</button>`;
 }
-function goHome() { stopSpeaking(); clearInterval(tick); if (busy) busy.abort(); busy = null; S.phase = 'setup'; S.exam = null; S.result = null; save(); render(); }
+function goHome() { stopSpeaking(); speakNote = null; clearInterval(tick); if (busy) busy.abort(); busy = null; S.phase = 'setup'; S.exam = null; S.result = null; save(); render(); }
 
 /* ---------- done + grading ---------- */
 function renderDone() {
