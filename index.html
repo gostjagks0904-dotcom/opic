@@ -151,11 +151,13 @@ textarea{display:block;width:100%;min-height:10.5rem;padding:0 12px;border:1px s
 .fixes span{font-size:.875rem;color:var(--ink-2)}
 .model{white-space:pre-wrap;overflow-wrap:anywhere;border-left:3px solid var(--ok);padding-left:12px}
 @media (max-width:420px){ .fields{grid-template-columns:1fr} .grade-big{font-size:3.75rem} }
+.toast{position:fixed;left:16px;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));z-index:20;max-width:520px;margin:0 auto;padding:12px 16px;border-radius:10px;background:var(--ink);color:var(--sheet);font:500 .9375rem/1.5 var(--body);word-break:keep-all;overflow-wrap:anywhere;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 @media (prefers-reduced-motion:reduce){ .wave.on i{animation:none;height:20px} .mic.on .dot{animation:none} }
 </style>
 </head>
 <body>
 <main class="wrap" id="app"></main>
+<div class="toast" id="toast" role="status" hidden></div>
 <script>
 (() => {
 'use strict';
@@ -305,6 +307,12 @@ const saveConn = () => { try { localStorage.setItem(CONN_KEY, JSON.stringify(CON
 const conn = () => CONN[CONN.provider];
 const apiErr = (code, detail) => ({ code, message: String(detail || code), detail: detail ? String(detail).slice(0, 160) : '' });
 
+let toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById('toast'); if (!el) return;
+  el.textContent = msg; el.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 8000);
+}
 async function apiFetch(url, init) {
   let res, body = null;
   try { res = await fetch(url, init); }
@@ -314,6 +322,7 @@ async function apiFetch(url, init) {
   const msg = (body && body.error && (body.error.message || body.error.status)) || ('HTTP ' + res.status);
   if (res.status === 429) throw apiErr('rate_limited', msg);
   if (res.status === 401 || res.status === 403 || /api key/i.test(msg)) throw apiErr('bad_key', msg);
+  if (res.status === 503 || res.status === 529 || /overloaded|high demand|unavailable/i.test(msg)) throw apiErr('busy', msg);   // the service itself is swamped: nothing wrong with the key or the request
   throw apiErr('upstream_error', msg);
 }
 async function listModels(p, key) {
@@ -329,11 +338,8 @@ async function listModels(p, key) {
     .filter(m => /^(gpt-|o\d|chatgpt-)/.test(m.id || '') && !/(audio|realtime|transcribe|tts|image|embedding|search|instruct|codex|moderation)/.test(m.id) && !/-\d{4}-\d{2}-\d{2}$/.test(m.id))
     .sort((a, b) => (b.created || 0) - (a.created || 0)).map(m => m.id);
 }
-async function callModel(prompt, opts) {
-  const p = CONN.provider, c = conn(), signal = opts && opts.signal;
-  if (!c.key) throw apiErr('no_key');
-  const model = (opts && opts.modelTier === 'complex' && c.grade) || c.model;   // grading may use a stronger model
-  if (!model) throw apiErr('no_model');
+async function callOnce(model, prompt, signal) {
+  const p = CONN.provider, c = conn();
   let text = '';
   if (p === 'gemini') {
     const d = await apiFetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
@@ -352,6 +358,34 @@ async function callModel(prompt, opts) {
   }
   if (!text.trim()) throw apiErr('empty_completion');
   return text;
+}
+// models to stand in when the chosen one is swamped: the nearest general model first, then a light one
+function standIns(model) {
+  const list = conn().list.filter(m => m !== model && !/preview|exp/.test(m));
+  if (CONN.provider !== 'gemini') return list.slice(0, 2);
+  return list.filter(m => /flash/.test(m) && !/lite/.test(m)).slice(0, 1).concat(list.filter(m => /flash-lite/.test(m)).slice(0, 1));
+}
+const pause = (ms, signal) => new Promise((res, rej) => {
+  const t = setTimeout(res, ms);
+  if (signal) signal.addEventListener('abort', () => { clearTimeout(t); rej(apiErr('cancelled')); }, { once: true });
+});
+async function callModel(prompt, opts) {
+  const c = conn(), signal = opts && opts.signal;
+  if (!c.key) throw apiErr('no_key');
+  const model = (opts && opts.modelTier === 'complex' && c.grade) || c.model;   // grading may use a stronger model
+  if (!model) throw apiErr('no_model');
+  const order = [model, model].concat(standIns(model));
+  let err = null;
+  for (let i = 0; i < order.length; i++) {
+    if (signal && signal.aborted) throw apiErr('cancelled');
+    if (i === 1) await pause(1500, signal);        // a spike often clears within moments: ask the same model once more first
+    try {
+      const text = await callOnce(order[i], prompt, signal);
+      if (order[i] !== model) toast(`${model} 모델에 요청이 몰려서 이번에는 ${order[i]} 모델이 대신 답했어요.`);
+      return text;
+    } catch (e) { err = e; if (e.code !== 'busy') throw e; }
+  }
+  throw err;
 }
 function parseLoose(text) {
   const tries = [text, (text.match(/```(?:json)?\s*([\s\S]*?)```/) || [])[1]];
@@ -651,6 +685,7 @@ function aiError(e) {
   if (c === 'no_key' || c === 'no_model') return 'API 키와 모델이 아직 없어요. 처음 화면의 AI 연결에서 키를 넣고 연결 확인을 눌러 주세요.';
   if (c === 'bad_key') return 'API 키가 맞지 않거나 권한이 없어요. 처음 화면의 AI 연결에서 키를 확인해 주세요.' + tail;
   if (c === 'network') return 'AI 서버에 연결하지 못했어요. 인터넷 연결을 확인한 뒤 다시 눌러 주세요.' + tail;
+  if (c === 'busy') return `지금 ${STANDALONE ? PROVIDERS[CONN.provider] : 'AI'} 서버에 요청이 몰려서 답을 받지 못했어요. 키나 설정 문제가 아니에요. 잠시 뒤에 다시 누르거나, 처음 화면의 AI 연결에서 다른 모델을 골라 주세요.`;
   if (c === 'rate_limited' && STANDALONE) return '이 API 키의 사용량 한도에 걸렸어요. 잠시 뒤에 다시 누르거나 다른 모델을 골라 주세요.' + tail;
   if (['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed'].includes(c)) {
     CAP.sampleOff = true;
