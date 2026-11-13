@@ -417,14 +417,15 @@ function localDictation() {
 /* ---------- recorded dictation: iPhone browsers and home-screen apps have no usable live recognizer, so record the answer and let the connected AI write it out ---------- */
 const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const REC_RATE = 16000, REC_MAX_SEC = 240;
-const HEAR_PROMPT = 'Transcribe the English speech in this recording word for word. The speaker is a Korean learner answering an English speaking-test question. Write exactly what was said: keep grammar mistakes, wrong word choices, repetitions and self-corrections, and do not fix, summarize, translate or add anything. Leave out filler sounds such as "um" and "uh". Use normal capitalization and punctuation. If there is no intelligible speech, reply with exactly [NO SPEECH]. Reply with the transcript only.';
-function wavBlob(chunks, n, rate) {
+const HEAR_PROMPT = 'Transcribe the English speech in this recording. The speaker is a Korean learner answering an English speaking-test question, so expect a Korean accent: where a sound is ambiguous (r/l, f/p, v/b, th/s, long and short vowels), write the word that fits the sentence. Otherwise keep the speaker\'s own wording: keep grammar mistakes, wrong word choices, repetitions and self-corrections, and do not fix, summarize, translate or add anything. Leave out filler sounds such as "um" and "uh". Write anything said in Korean in Korean. Use normal capitalization and punctuation. If there is no intelligible speech, reply with exactly [NO SPEECH]. Reply with the transcript only.';
+const hearPrompt = q => HEAR_PROMPT + (q ? `\nFor context only, the question being answered is: "${q}" Use it just to decide between words that sound alike; never add or complete anything that was not spoken.` : '');
+function wavBlob(chunks, n, rate, gain) {
   const buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
   const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
   str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
   v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, n * 2, true);
   let o = 44;
-  chunks.forEach(c => { for (let i = 0; i < c.length; i++, o += 2) v.setInt16(o, c[i], true); });
+  chunks.forEach(c => { for (let i = 0; i < c.length; i++, o += 2) { const x = c[i] * (gain || 1); v.setInt16(o, x > 32767 ? 32767 : x < -32768 ? -32768 : x, true); } });
   return new Blob([buf], { type: 'audio/wav' });
 }
 const blobBase64 = blob => new Promise((res, rej) => {
@@ -433,33 +434,56 @@ const blobBase64 = blob => new Promise((res, rej) => {
   r.onerror = () => rej(apiErr('upstream_error', 'audio read failed'));
   r.readAsDataURL(blob);
 });
-// transcription has its own model order: a light model first (its own quota, quicker), then the main one
+// Low-pass before dropping to 16 kHz, so sounds above the new limit (s, sh, f, th) are removed instead of folding back as noise over the speech.
+function makeResampler(inRate, outRate) {
+  if (inRate <= outRate) return inp => inp;
+  const ratio = inRate / outRate, half = 8 * Math.ceil(ratio), N = 2 * half + 1, fc = 0.45 / ratio, k = new Float32Array(N);
+  let sum = 0;
+  for (let i = 0; i < N; i++) { const x = i - half; k[i] = (x ? Math.sin(2 * Math.PI * fc * x) / (Math.PI * x) : 2 * fc) * (0.54 - 0.46 * Math.cos(2 * Math.PI * i / (N - 1))); sum += k[i]; }
+  for (let i = 0; i < N; i++) k[i] /= sum;
+  let tail = new Float32Array(0), pos = half;
+  const at = (buf, j) => { let a = 0; for (let i = 0, b = j - half; i < N; i++) a += buf[b + i] * k[i]; return a; };
+  return inp => {
+    const buf = new Float32Array(tail.length + inp.length); buf.set(tail); buf.set(inp, tail.length);
+    const out = new Float32Array(Math.ceil(inp.length / ratio) + 3);
+    let o = 0;
+    while (Math.floor(pos) + 1 + half < buf.length) {
+      const j = Math.floor(pos), f = pos - j, a = at(buf, j);
+      out[o++] = f > 1e-6 ? a + (at(buf, j + 1) - a) * f : a;
+      pos += ratio;
+    }
+    const keep = Math.max(0, Math.floor(pos) - half);
+    tail = buf.slice(keep); pos -= keep;
+    return out.subarray(0, o);
+  };
+}
+// transcription model order: the one picked for it (else the main model) for accuracy, then a light model as a fallback when that one is limited
 function hearModels() {
   const c = conn();
   if (CONN.provider === 'openai') return ['gpt-transcribe', 'gpt-4o-mini-transcribe', 'whisper-1'];
   const lite = c.list.find(m => /flash-lite/.test(m) && !/preview|exp/.test(m));
-  return [lite, c.model].filter((m, i, a) => m && a.indexOf(m) === i);
+  return [c.list.includes(c.hear) ? c.hear : '', c.model, lite].filter((m, i, a) => m && a.indexOf(m) === i);
 }
-async function hearWith(model, blob, signal) {
+async function hearWith(model, blob, signal, about) {
   const c = conn();
   let text = '';
   if (CONN.provider === 'gemini') {
     const data = await blobBase64(blob);
     const d = await apiFetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST', signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': c.key },
-      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: HEAR_PROMPT }, { inline_data: { mime_type: 'audio/wav', data } }] }] }) });
+      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: hearPrompt(about) }, { inline_data: { mime_type: 'audio/wav', data } }] }] }) });
     const cand = d.candidates && d.candidates[0];
     text = ((cand && cand.content && cand.content.parts) || []).filter(x => !x.thought).map(x => x.text || '').join('');
   } else {
     const f = new FormData();
     f.append('file', blob, 'answer.wav'); f.append('model', model); f.append('language', 'en');
-    if (model !== 'whisper-1') f.append('prompt', 'An English speaking-test answer by a Korean learner. Transcribe exactly as spoken, keeping grammar mistakes.');
+    if (model !== 'whisper-1') f.append('prompt', 'An English speaking-test answer by a Korean learner with a Korean accent. Transcribe as spoken, keeping grammar mistakes.' + (about ? ' The question was: ' + about : ''));
     const d = await apiFetch('https://api.openai.com/v1/audio/transcriptions', { method: 'POST', signal, headers: { Authorization: 'Bearer ' + c.key }, body: f });
     text = d.text || '';
   }
   return text.replace(/\[\s*NO SPEECH\s*\]/gi, ' ').replace(/\s+/g, ' ').trim();
 }
-async function transcribe(blob, signal) {
+async function transcribe(blob, signal, about) {
   if (!conn().key) throw apiErr('no_key');
   const models = hearModels();
   if (!models.length) throw apiErr('no_model');
@@ -468,7 +492,7 @@ async function transcribe(blob, signal) {
     if (round) await new Promise(r => setTimeout(r, 2500));       // one more pass after a short wait: limits and blips often clear
     for (const m of models) {
       if (signal.aborted) throw apiErr('cancelled');
-      try { return await hearWith(m, blob, signal); }
+      try { return await hearWith(m, blob, signal, about); }
       catch (e) { err = e; if (e.code === 'cancelled' || e.code === 'bad_key') throw e; if (e.code === 'network') break; }
     }
   }
@@ -479,7 +503,7 @@ function recordDictation() {
   if (!AC || !md || !md.getUserMedia) return null;
   const subs = { partial: [], final: [], state: [] };
   let state = 'idle', stream = null, ctx = null, node = null, src = null, meter = null;
-  let chunks = [], total = 0, outRate = REC_RATE, step = 1, acc = 0, cnt = 0, frac = 0, level = 0, peak = 0, t0 = 0;
+  let chunks = [], total = 0, outRate = REC_RATE, resample = null, levels = [], top = 0, level = 0, peak = 0, t0 = 0, about = '';
   let kept = null, ctl = null, running = null, dropped = false;
   const emit = (k, v) => subs[k].forEach(f => f(v));
   const set = (s, reason, detail) => { state = s; emit('state', { state: s, reason, detail }); };
@@ -491,16 +515,22 @@ function recordDictation() {
     try { if (ctx) { const p = ctx.close(); if (p && p.catch) p.catch(() => {}); } } catch (e) {}
     stream = ctx = node = src = null;
   };
-  const feed = inp => {                       // box-filter the device rate down to 16 kHz, 16-bit mono
+  const feed = inp => {                       // device rate -> 16 kHz, 16-bit mono
     if (state !== 'listening') return;
-    const out = new Int16Array(Math.ceil(inp.length / step) + 1);
-    let o = 0, sum = 0;
-    for (let i = 0; i < inp.length; i++) {
-      const s = inp[i]; sum += s * s; acc += s; cnt++; frac += 1;
-      if (frac >= step) { frac -= step; const v = Math.max(-1, Math.min(1, acc / cnt)); out[o++] = v < 0 ? v * 0x8000 : v * 0x7FFF; acc = 0; cnt = 0; }
-    }
-    if (o) { chunks.push(out.subarray(0, o)); total += o; }
+    let sum = 0;
+    for (let i = 0; i < inp.length; i++) sum += inp[i] * inp[i];
     level = Math.sqrt(sum / Math.max(1, inp.length)); if (level > peak) peak = level;
+    levels.push(level);
+    const r = resample(inp), out = new Int16Array(r.length);
+    for (let i = 0; i < r.length; i++) { const v = Math.max(-1, Math.min(1, r[i])), m = v < 0 ? -v : v; if (m > top) top = m; out[i] = v < 0 ? v * 0x8000 : v * 0x7FFF; }
+    if (out.length) { chunks.push(out); total += out.length; }
+  };
+  const gainFor = () => {                     // bring a quiet take up to a normal speaking level (never turns anything down)
+    const l = levels.slice().sort((a, b) => b - a), n = Math.max(1, Math.round(l.length * 0.2));
+    let sum = 0;
+    for (let i = 0; i < n; i++) sum += l[i];
+    const loud = sum / n;                     // the loudest fifth of the take is roughly the speech itself
+    return loud > 0 ? Math.max(1, Math.min(12, 0.1 / loud, 1.4 / Math.max(top, 1e-4))) : 1;
   };
   const tap = async () => {
     if (ctx.createScriptProcessor) {
@@ -527,7 +557,7 @@ function recordDictation() {
     const c = ctl = new AbortController(), timer = setTimeout(() => c.abort(), 75000);
     running = (async () => {
       let text = '', err = null;
-      try { text = await transcribe(blob, c.signal); } catch (e) { err = e; }
+      try { text = await transcribe(blob, c.signal, about); } catch (e) { err = e; }
       clearTimeout(timer); ctl = null; running = null; note('');
       if (dropped) { set('idle', 'stopped'); return {}; }
       if (err) { kept = blob; set('idle', 'failed', aiError(err) || '시간이 너무 오래 걸려서 멈췄어요.'); return { failed: true }; }
@@ -541,8 +571,8 @@ function recordDictation() {
   const finish = why => {
     if (state !== 'listening') return running || Promise.resolve({});
     const n = total, rate = outRate, sec = n / rate, heard = peak >= 0.004;
-    const blob = n ? wavBlob(chunks, n, rate) : null;
-    chunks = []; total = 0; release(); note('');
+    const blob = n ? wavBlob(chunks, n, rate, gainFor()) : null;
+    chunks = []; levels = []; total = 0; release(); note('');
     if (!n) { set('idle', 'no_audio'); return Promise.resolve({}); }
     if (sec < 0.4) { set('idle', 'stopped'); return Promise.resolve({}); }
     if (!heard) { set('idle', 'silent'); return Promise.resolve({}); }
@@ -555,9 +585,9 @@ function recordDictation() {
     pending: () => !!kept,
     discard: () => { kept = null; },
     retry: () => (state === 'idle' && kept ? run(kept, 'stopped') : (running || Promise.resolve({}))),
-    start: async () => {
+    start: async opts => {
       if (state !== 'idle') return;
-      kept = null; set('starting');
+      kept = null; about = String((opts && opts.context) || '').slice(0, 600); set('starting');
       let s;
       try { s = await md.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
       catch (e) {
@@ -569,8 +599,8 @@ function recordDictation() {
       if (state !== 'starting') { s.getTracks().forEach(t => t.stop()); return; }   // left while the permission prompt was open
       try {
         stream = s; ctx = new AC();                                 // created once capture is live, so it takes the capture sample rate
-        outRate = Math.min(REC_RATE, ctx.sampleRate); step = ctx.sampleRate / outRate;
-        chunks = []; total = 0; acc = cnt = frac = level = peak = 0;
+        outRate = Math.min(REC_RATE, ctx.sampleRate); resample = makeResampler(ctx.sampleRate, outRate);
+        chunks = []; levels = []; total = 0; top = level = peak = 0;
         src = ctx.createMediaStreamSource(stream);
         await tap();
         if (ctx.state !== 'running') ctx.resume().catch(() => {});
@@ -585,7 +615,7 @@ function recordDictation() {
     cancel: () => {                                                  // leave without transcribing
       kept = null; dropped = true;
       if (ctl) ctl.abort();
-      if (state === 'listening' || state === 'starting') { chunks = []; total = 0; release(); note(''); set('idle', 'stopped'); }
+      if (state === 'listening' || state === 'starting') { chunks = []; levels = []; total = 0; release(); note(''); set('idle', 'stopped'); }
     },
     onPartial: f => { subs.partial.push(f); }, onFinal: f => { subs.final.push(f); }, onState: f => { subs.state.push(f); }
   };
@@ -818,6 +848,7 @@ function connHtml() {
     <div class="fields" id="modelFields" ${c.list.length ? '' : 'hidden'}>
       <label class="field" for="aiModel"><span>모델 (출제·피드백)</span><select id="aiModel">${opts(c.model)}</select></label>
       <label class="field" for="aiGrade"><span>채점 모델</span><select id="aiGrade">${opts(c.grade, '위와 같은 모델')}</select></label>
+      ${CONN.provider === 'gemini' && LOCAL.dictation && LOCAL.dictation.kind === 'record' ? `<label class="field" for="aiHear"><span>받아쓰기 모델 (말한 답을 글로)</span><select id="aiHear">${opts(c.hear, '위와 같은 모델')}</select></label>` : ''}
     </div>
     <p class="status" id="aiStatus" role="status">${c.list.length ? `연결됐어요. 고를 수 있는 모델이 ${c.list.length}개예요.` : '키를 넣고 연결 확인을 누르면 쓸 수 있는 모델을 불러와요.'}</p>
     <p class="note">키는 ${CONN.provider === 'gemini' ? 'Google AI Studio(aistudio.google.com)' : 'OpenAI 플랫폼(platform.openai.com)'}에서 발급받아요. 이 브라우저에만 저장되고 고른 서비스로만 보내며, 출제와 채점은 그 서비스의 요금과 한도를 따라요.${LOCAL.dictation && LOCAL.dictation.kind === 'record' ? ' 이 기기에서는 말하기 버튼으로 녹음한 음성도 글로 옮기려고 그 서비스로 보내고, 답변 하나에 요청을 한 번 써요.' : ''}</p>
@@ -835,6 +866,7 @@ async function checkKey() {
     // default to a mid-priced model, never silently to the most expensive one
     if (!list.includes(c.model)) c.model = list.find(m => (p === 'gemini' ? /flash/ : /terra/).test(m) && !/lite|preview|exp/.test(m)) || list[0];
     if (!list.includes(c.grade)) c.grade = '';
+    if (!list.includes(c.hear)) c.hear = '';
     saveConn();
     if (S.phase === 'setup' && CONN.provider === p) renderSetup();
   } catch (e) {
@@ -1058,7 +1090,7 @@ function micClick() {
   const h = $('#micHint'); if (h) delete h.dataset.msg;
   if (d.pending && d.pending()) { beginAnswer(); d.retry(); return; }
   stopSpeaking(); beginAnswer();
-  d.start({ language: 'en' }).catch(e => {
+  d.start(d.kind === 'record' ? { language: 'en', context: curQ().text } : { language: 'en' }).catch(e => {
     const c = e && e.code;
     if (c === 'not_granted' || c === 'unavailable') { CAP.dictOff = true; delete $('#micHint').dataset.msg; syncExam(); }
     else if (c === 'rate_limited') setHint('잠시 뒤에 다시 눌러 주세요.');
@@ -1333,6 +1365,7 @@ app.addEventListener('change', e => {
   if (e.target.id === 'status' || e.target.id === 'home') { S.prefs[e.target.id] = e.target.value; save(); }
   if (e.target.id === 'aiModel') { conn().model = e.target.value; saveConn(); paintCaps(); }
   if (e.target.id === 'aiGrade') { conn().grade = e.target.value; saveConn(); }
+  if (e.target.id === 'aiHear') { conn().hear = e.target.value; saveConn(); }
 });
 app.addEventListener('input', e => {
   if (e.target.id === 'apiKey') { conn().key = e.target.value.trim(); saveConn(); paintCaps(); return; }
